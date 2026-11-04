@@ -1,0 +1,32 @@
+# World map dimensions in tiles.
+map_width=512
+map_height=512
+# Number of noise octaves.
+octaves=9
+# Larger values make the initial height-map octave finer and islands smaller.
+scale=3
+# Noise scale for the heat map.
+heat_map_scale=1
+# Noise amplitude and biome height thresholds.
+persistence=0.45
+deep_water_boundary=0.5
+shallow_water_boundary=0.65
+beach_boundary=0.70
+plains_boundary=0.85
+mountains_boundary=0.95
+# Minimum area for a continent; smaller land regions are islands.
+continent_min_area_fraction=0.004
+
+# Initial object counts and generated variant ranges.
+tree_count=200
+tree_variant_count=3
+
+# Object footprints in tiles. Variant indexes start at zero.
+tree_width_tiles=3
+tree_narrow_variant=2
+tree_narrow_width_tiles=2
+tree_height_tiles=3
+
+# Placement retry budget: count * multiplier + padding.
+placement_attempt_multiplier=30
+placement_attempt_padding=100
