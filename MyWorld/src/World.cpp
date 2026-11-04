@@ -179,8 +179,6 @@ void World::generate_height_map(int height, int width, int octaves, int scale) {
     );
     if (height_map_.empty() || height_map_.front().empty()) return;
 
-    // Keep the generated land inside an irregular, oval-shaped envelope. The
-    // terrain noise bends the coast so it does not read as a rectangular frame.
     const double fade_width = 0.10;
     parallel_for_range(static_cast<size_t>(height), [&](size_t first_row, size_t end_row) {
         for (size_t row = first_row; row < end_row; ++row) {
@@ -215,8 +213,6 @@ void World::generate_tile_map(int height, int width) {
         height_map_.empty() ||
         height_map_.front().size() != static_cast<size_t>(width)) {
         tiled_map_.clear();
-        continent_map_.clear();
-        continent_colors_.clear();
         chunks_.clear();
         map_width_ = map_height_ = chunks_x_ = chunks_y_ = 0;
         return;
@@ -229,8 +225,6 @@ void World::generate_tile_map(int height, int width) {
     chunks_.clear();
     chunks_.resize(static_cast<size_t>(chunks_x_) * chunks_y_);
     objects_.clear();
-    continent_map_.clear();
-    continent_colors_.clear();
     next_object_id_ = 1;
     tiled_map_.assign(height, vector<int>(width, 0));
 
@@ -258,8 +252,8 @@ void World::create_initial_items(const vector<InitialItem>& items) {
         case WorldObjectType::Tree:
             generate_trees(count);
             break;
-        case WorldObjectType::Rock:
-            generate_rocks(count);
+        case WorldObjectType::Mineral:
+            generate_minerals(count);
             break;
         }
     }
@@ -299,21 +293,48 @@ void World::generate_trees(size_t count) {
     }
 }
 
-void World::generate_rocks(size_t count) {
-    if (map_width_ <= 0 || map_height_ <= 0 || tiled_map_.empty()) return;
+void World::generate_minerals(size_t count) {
+    // ОТЛАДКА: Проверяем, с каким количеством вызвалась функция
+    std::cout << "[DEBUG] generate_minerals called with count: " << count << std::endl;
+    if (map_width_ <= 0 || map_height_ <= 0 || tiled_map_.empty() || count == 0)
+        return;
+
     uniform_int_distribution<int> x_dist(0, map_width_ - 1);
     uniform_int_distribution<int> y_dist(0, map_height_ - 1);
-    uniform_int_distribution<int> variant_dist(0, 1);
-    const size_t max_attempts = count * 30 + 100;
+
+    std::vector<double> weights = {
+        max(0.0, generation_config_.rock_chance),
+        max(0.0, generation_config_.copper_chance),
+        max(0.0, generation_config_.iron_chance),
+        max(0.0, generation_config_.gold_chance),
+        max(0.0, generation_config_.platinum_chance),
+    };
+    const double total_weight = accumulate(weights.begin(), weights.end(), 0.0);
+    if (total_weight <= 0.0) {
+        fill(weights.begin(), weights.end(), 0.0);
+        weights[static_cast<size_t>(MineralVariant::Rock)] = 1.0;
+    }
+    std::discrete_distribution<int> variant_dist(weights.begin(), weights.end());
+
+    const size_t max_attempts =
+        count * static_cast<size_t>(max(0, generation_config_.placement_attempt_multiplier)) +
+        static_cast<size_t>(max(0, generation_config_.placement_attempt_padding));
+
     size_t attempts = 0;
+    size_t generated = 0; // ОТЛАДКА
     while (count > 0 && attempts++ < max_attempts) {
         const int x = x_dist(random_engine);
         const int y = y_dist(random_engine);
-        if (can_place_object(x, y, 1, 1, WorldObjectType::Rock)) {
-            add_object({ 0, WorldObjectType::Rock, x, y, 1, 1, false, variant_dist(random_engine) });
-            --count;
-        }
+
+        if (tiled_map_[y][x] != 4) continue;                 // только горы
+        if (!can_place_object(x, y, 1, 1, WorldObjectType::Mineral)) continue;
+
+        const int variant = variant_dist(random_engine);
+        add_object({ 0, WorldObjectType::Mineral, x, y, 1, 1, false, variant });
+        --count;
+        generated++; // ОТЛАДКА
     }
+    std::cout << "[DEBUG] generate_minerals generated: " << generated << std::endl;
 }
 
 bool World::can_place_object(int x, int y, int width, int height, WorldObjectType type) const {
@@ -324,7 +345,7 @@ bool World::can_place_object(int x, int y, int width, int height, WorldObjectTyp
         for (int tile_x = x; tile_x < x + width; ++tile_x) {
             const int tile = tiled_map_[tile_y][tile_x];
             if (type == WorldObjectType::Tree && tile != 3) return false;
-            if (type == WorldObjectType::Rock && tile != 4 && tile != 5) return false;
+            if (type == WorldObjectType::Mineral && tile != 4) return false;
         }
     }
     return true;

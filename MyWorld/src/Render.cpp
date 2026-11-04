@@ -45,7 +45,7 @@ namespace {
 
     private:
         ULONG_PTR token_{};
-        Status status_{GenericError};
+        Status status_{ GenericError };
     };
 
     GdiplusRuntime& gdiplus_runtime() {
@@ -128,7 +128,7 @@ namespace {
                 loaded.push_back(move(texture));
             }
             return loaded;
-        }();
+            }();
         return textures;
     }
 
@@ -167,7 +167,53 @@ namespace {
                 loaded.push_back(move(texture));
             }
             return loaded;
-        }();
+            }();
+        return textures;
+    }
+
+    // Функция вынесена из tree_textures()
+    vector<TileTexture>& mineral_textures() {
+        static vector<TileTexture> textures = [] {
+            vector<TileTexture> loaded;
+            filesystem::path directory = filesystem::current_path() / L"assets" / L"textures" / L"minerals";
+            error_code error;
+            if (!filesystem::exists(directory, error)) {
+                vector<wchar_t> executable_path(32768);
+                const DWORD length = GetModuleFileNameW(nullptr, executable_path.data(), static_cast<DWORD>(executable_path.size()));
+                if (length > 0 && length < executable_path.size()) {
+                    filesystem::path project_directory = filesystem::path(wstring(executable_path.data(), length)).parent_path().parent_path().parent_path();
+                    directory = project_directory / L"assets" / L"textures" / L"minerals";
+                }
+            }
+
+            // Порядок должен соответствовать MineralVariant (Rock, Copper, Iron, Gold, Platinum)
+            const array<const wchar_t*, 5> file_names = {
+                L"rock.png", L"copper.png", L"iron.png", L"gold.png", L"platinum.png"
+            };
+
+            for (const auto* file_name : file_names) {
+                const filesystem::path file = directory / file_name;
+                auto bitmap = make_unique<Bitmap>(file.c_str());
+                TileTexture texture;
+                if (bitmap->GetLastStatus() == Ok) {
+                    texture.width = bitmap->GetWidth();
+                    texture.height = bitmap->GetHeight();
+                    texture.pixels.resize(static_cast<size_t>(texture.width) * texture.height);
+                    texture.alpha.resize(static_cast<size_t>(texture.width) * texture.height);
+                    for (UINT y = 0; y < texture.height; ++y) for (UINT x = 0; x < texture.width; ++x) {
+                        Color color;
+                        if (bitmap->GetPixel(x, y, &color) == Ok) {
+                            const uint32_t alpha = color.GetA();
+                            texture.pixels[static_cast<size_t>(y) * texture.width + x] =
+                                ((color.GetR() * alpha / 255) << 16) | ((color.GetG() * alpha / 255) << 8) | (color.GetB() * alpha / 255);
+                            texture.alpha[static_cast<size_t>(y) * texture.width + x] = static_cast<unsigned char>(alpha);
+                        }
+                    }
+                }
+                loaded.push_back(move(texture));
+            }
+            return loaded;
+            }();
         return textures;
     }
 
@@ -232,7 +278,7 @@ namespace {
     LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_param) {
         auto* context = reinterpret_cast<WindowContext*>(
             GetWindowLongPtrW(window, GWLP_USERDATA)
-        );
+            );
 
         if (message == WM_NCCREATE) {
             const auto* create_info = reinterpret_cast<CREATESTRUCTW*>(l_param);
@@ -332,7 +378,7 @@ void Render::draw(const World& world) const {
         1.0,
         target_map_size / base_map_width,
         target_map_size / base_map_height
-    }));
+        }));
     const float maximum_zoom = 30.0f;
     const float initial_zoom = minimum_zoom;
 
@@ -507,7 +553,7 @@ void Render::draw_map_tiles(
                 output_row[screen_x] = texture.pixels[source_y * texture.width + source_x];
             }
         }
-    };
+        };
 
     vector<thread> workers;
     workers.reserve(thread_count > 0 ? thread_count - 1 : 0);
@@ -542,7 +588,9 @@ void Render::draw_map_tiles(
     const int first_chunk_y = first_tile_y / Chunk::size_in_tiles;
     const int last_chunk_x = last_tile_x / Chunk::size_in_tiles;
     const int last_chunk_y = last_tile_y / Chunk::size_in_tiles;
+
     const vector<TileTexture>& available_tree_textures = tree_textures();
+    const vector<TileTexture>& available_mineral_textures = mineral_textures();
 
     vector<unsigned char> drawn(objects.size(), 0);
     vector<size_t> visible_objects;
@@ -555,8 +603,7 @@ void Render::draw_map_tiles(
                 const size_t object_index = static_cast<size_t>(id - 1);
                 if (drawn[object_index]) continue;
                 drawn[object_index] = 1;
-                if (objects[object_index].type == WorldObjectType::Tree)
-                    visible_objects.push_back(object_index);
+                visible_objects.push_back(object_index);
             }
         }
     }
@@ -570,15 +617,26 @@ void Render::draw_map_tiles(
         if (a.x != b.x)
             return a.x < b.x;
         return a.id < b.id;
-    });
+        });
 
     for (size_t object_index : visible_objects) {
         const WorldObject& object = objects[object_index];
 
-        const TileTexture* object_texture = object.type == WorldObjectType::Tree && object.variant >= 0 &&
-            static_cast<size_t>(object.variant) < available_tree_textures.size() &&
-            !available_tree_textures[object.variant].pixels.empty()
-            ? &available_tree_textures[object.variant] : nullptr;
+        // Правильный выбор текстуры в зависимости от типа объекта
+        const TileTexture* object_texture = nullptr;
+        if (object.type == WorldObjectType::Tree) {
+            if (object.variant >= 0 && static_cast<size_t>(object.variant) < available_tree_textures.size() &&
+                !available_tree_textures[object.variant].pixels.empty()) {
+                object_texture = &available_tree_textures[object.variant];
+            }
+        }
+        else if (object.type == WorldObjectType::Mineral) {
+            if (object.variant >= 0 && static_cast<size_t>(object.variant) < available_mineral_textures.size() &&
+                !available_mineral_textures[object.variant].pixels.empty()) {
+                object_texture = &available_mineral_textures[object.variant];
+            }
+        }
+
         const double sprite_height = max(1.0, object.height * static_cast<double>(tile_size));
         const double sprite_width = object_texture && object_texture->height > 0
             ? sprite_height * static_cast<double>(object_texture->width) / object_texture->height
@@ -594,7 +652,12 @@ void Render::draw_map_tiles(
             continue;
 
         const bool apply_small_object_effect = use_flat_colors && object.width < 5 && object.height < 5;
-        const uint32_t fallback_color = (20u << 16) | (105u << 8) | 35u;
+
+        // Цвет заглушка для минералов (серый) и деревьев (зеленый)
+        const uint32_t fallback_color = (object.type == WorldObjectType::Mineral)
+            ? ((128u << 16) | (128u << 8) | 128u)
+            : ((20u << 16) | (105u << 8) | 35u);
+
         const auto sample_object_pixel = [&](int local_x, int local_y) {
             array<uint32_t, 4> sample{}; // premultiplied RGBA
             if (local_x < 0 || local_y < 0 || local_x >= draw_width || local_y >= draw_height)
@@ -606,12 +669,13 @@ void Render::draw_map_tiles(
                 const uint32_t color = object_texture->pixels[source_index];
                 sample = { (color >> 16) & 0xffu, (color >> 8) & 0xffu, color & 0xffu,
                     object_texture->alpha[source_index] };
-            } else {
+            }
+            else {
                 sample = { (fallback_color >> 16) & 0xffu, (fallback_color >> 8) & 0xffu,
                     fallback_color & 0xffu, 255u };
             }
             return sample;
-        };
+            };
 
         for (int screen_y = max(0, top); screen_y < bottom; ++screen_y) {
             for (int screen_x = max(0, left); screen_x < right; ++screen_x) {
@@ -628,7 +692,8 @@ void Render::draw_map_tiles(
                     }
                     for (uint32_t& channel : source)
                         channel = (channel + 4u) / 9u;
-                } else {
+                }
+                else {
                     source = sample_object_pixel(local_x, local_y);
                 }
                 const uint32_t source_alpha = source[3];

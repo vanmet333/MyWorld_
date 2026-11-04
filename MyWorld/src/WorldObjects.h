@@ -8,7 +8,16 @@ using ObjectId = std::uint32_t;
 
 enum class WorldObjectType {
     Tree,
-    Rock
+    Mineral
+
+};
+
+enum class MineralVariant : int {
+    Rock = 0,
+    Copper = 1,
+    Iron = 2,
+    Gold = 3,
+    Platinum = 4,
 };
 
 // Один экземпляр объекта хранится в World. Чанки содержат только его ID.

@@ -5,27 +5,99 @@
 #include <cstddef>
 #include <vector>
 
-struct WorldGenerationConfig {
-    int map_width = 512;
-    int map_height = 512;
-    int octaves = 9;
-    int scale = 2;
-    int heat_map_scale = 1;
-    double persistence = 0.5;
-    double deep_water_boundary = 0.5;
-    double shallow_water_boundary = 0.6;
-    double beach_boundary = 0.65;
-    double plains_boundary = 0.85;
-    double mountains_boundary = 0.95;
-    int tree_count = 200;
-    int tree_variant_count = 3;
-    int tree_width_tiles = 3;
-    int tree_narrow_variant = 2;
-    int tree_narrow_width_tiles = 2;
-    int tree_height_tiles = 3;
-    int placement_attempt_multiplier = 30;
-    int placement_attempt_padding = 100;
+#include <fstream>
+#include <string>
+#include <unordered_map>
+#include <cctype>
 
+struct WorldGenerationConfig {
+    int    map_width;
+    int    map_height;
+    int    octaves;
+    int    scale;
+    int    heat_map_scale;
+    double persistence;
+    double deep_water_boundary;
+    double shallow_water_boundary;
+    double beach_boundary;
+    double plains_boundary;
+    double mountains_boundary;
+    int    tree_count;
+    int    tree_variant_count;
+    int    tree_width_tiles;
+    int    tree_narrow_variant;
+    int    tree_narrow_width_tiles;
+    int    tree_height_tiles;
+    int    placement_attempt_multiplier;
+    int    placement_attempt_padding;
+    // Ore variant chances (should sum to ~1.0; normalized automatically).
+    int mineral_count;
+    double rock_chance;
+    double copper_chance;
+    double iron_chance;
+    double gold_chance;
+    double platinum_chance;
+
+    static WorldGenerationConfig load(const std::string& path = "world_consts.txt") {
+        WorldGenerationConfig c{};
+
+        std::ifstream f(path);
+        if (!f) return c;
+
+        std::unordered_map<std::string, std::string> kv;
+        std::string line;
+        while (std::getline(f, line)) {
+            auto hash = line.find_first_of("#;");
+            if (hash != std::string::npos) line.erase(hash);
+            auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            auto key = line.substr(0, eq);
+            auto val = line.substr(eq + 1);
+            auto trim = [](std::string& s) {
+                auto ws = [](char ch) { return std::isspace((unsigned char)ch); };
+                while (!s.empty() && ws(s.front())) s.erase(s.begin());
+                while (!s.empty() && ws(s.back()))  s.pop_back();
+                };
+            trim(key); trim(val);
+            kv[key] = val;
+        }
+
+        auto get = [&](const char* k, auto& field) {
+            auto it = kv.find(k);
+            if (it == kv.end()) return;
+            using T = std::decay_t<decltype(field)>;
+            if      constexpr (std::is_same_v<T, int>)    field = std::stoi(it->second);
+            else if constexpr (std::is_same_v<T, double>) field = std::stod(it->second);
+            };
+
+        get("map_width", c.map_width);
+        get("map_height", c.map_height);
+        get("octaves", c.octaves);
+        get("scale", c.scale);
+        get("heat_map_scale", c.heat_map_scale);
+        get("persistence", c.persistence);
+        get("deep_water_boundary", c.deep_water_boundary);
+        get("shallow_water_boundary", c.shallow_water_boundary);
+        get("beach_boundary", c.beach_boundary);
+        get("plains_boundary", c.plains_boundary);
+        get("mountains_boundary", c.mountains_boundary);
+        get("mineral_count", c.mineral_count);
+        get("rock_chance", c.rock_chance);      
+        get("copper_chance", c.copper_chance);
+        get("iron_chance", c.iron_chance);
+        get("gold_chance", c.gold_chance);
+        get("platinum_chance", c.platinum_chance);
+        get("tree_count", c.tree_count);
+        get("tree_variant_count", c.tree_variant_count);
+        get("tree_width_tiles", c.tree_width_tiles);
+        get("tree_narrow_variant", c.tree_narrow_variant);
+        get("tree_narrow_width_tiles", c.tree_narrow_width_tiles);
+        get("tree_height_tiles", c.tree_height_tiles);
+        get("placement_attempt_multiplier", c.placement_attempt_multiplier);
+        get("placement_attempt_padding", c.placement_attempt_padding);
+
+        return c;
+    }
 };
 
 std::vector<std::vector<double>> generate_value_noise(
@@ -52,7 +124,7 @@ public:
 
 private:
     void generate_trees(std::size_t count);
-    void generate_rocks(std::size_t count);
+    void generate_minerals(std::size_t count);
     void add_object(WorldObject object);
     bool can_place_object(int x, int y, int width, int height, WorldObjectType type) const;
     std::size_t chunk_index(int chunk_x, int chunk_y) const;

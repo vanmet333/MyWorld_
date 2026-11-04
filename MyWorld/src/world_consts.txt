@@ -21,6 +21,14 @@ continent_min_area_fraction=0.004
 tree_count=200
 tree_variant_count=3
 
+mineral_count=200
+rock_chance=0.5
+copper_chance=0.2
+iron_chance=0.2
+gold_chance=0.09
+platinum_chance=0.01
+
+
 # Object footprints in tiles. Variant indexes start at zero.
 tree_width_tiles=3
 tree_narrow_variant=2
