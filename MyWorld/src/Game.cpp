@@ -53,8 +53,6 @@ namespace {
                     else if (key == "beach_boundary") config.beach_boundary = parsed_value;
                     else if (key == "plains_boundary") config.plains_boundary = parsed_value;
                     else if (key == "mountains_boundary") config.mountains_boundary = parsed_value;
-                    else if (key == "continent_min_area_fraction" && parsed_value >= 0.0 && parsed_value < 1.0)
-                        config.continent_min_area_fraction = parsed_value;
                 } else {
                     const int parsed_value = stoi(value);
                     if (key == "map_height" && parsed_value > 0) config.map_height = parsed_value;
@@ -99,7 +97,6 @@ void Game::start()
         config.heat_map_scale
     );
     world_.generate_tile_map(map_height, map_width);
-    world_.generate_continent_map();
     world_.create_initial_items({
         { WorldObjectType::Tree, static_cast<size_t>(config.tree_count) }
     });

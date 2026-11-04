@@ -25,23 +25,7 @@ struct WorldGenerationConfig {
     int tree_height_tiles = 3;
     int placement_attempt_multiplier = 30;
     int placement_attempt_padding = 100;
-    double continent_min_area_fraction = 0.015;
 
-    // Continent cutting / bridge parameters
-    int continent_cut_count_area_multiple = 100;
-    double continent_cut_sand_coefficient = 1.0;
-    double continent_cut_plains_coefficient = 1.0;
-    double continent_cut_mountain_coefficient = 2.0;
-    int continent_cut_candidates_per_angle = 5;
-    double continent_cut_trace_step = 0.5;
-    int continent_cut_validation_batch_size = 64;
-    double continent_cut_min_split_fraction = 0.25;
-    int continent_cut_band_radius = 1;
-    double continent_cut_endpoint_max_distance = 50.0;
-    double continent_cut_snow_coefficient = 1.0;
-    double continent_cut_offset_step = 0.5;
-    double continent_cut_angle_step_degrees = 5.0;
-    double continent_cut_trace_margin = 2.0;
 };
 
 std::vector<std::vector<double>> generate_value_noise(
@@ -56,18 +40,12 @@ public:
     void generate_height_map(int height, int width, int octaves, int scale = 0);
     void generate_heat_map(int height, int width, int octaves, int scale = 0);
     void generate_tile_map(int height, int width);
-    void generate_continent_map();
     void create_initial_items(const std::vector<InitialItem>& items);
     void update_chunks(double delta_time);
 
     const std::vector<std::vector<double>>& get_height_map() const;
     const std::vector<std::vector<double>>& get_heat_map() const;
     const std::vector<std::vector<int>>& get_tiled_map() const;
-    const std::vector<std::vector<int>>& get_continent_map() const;
-    const std::vector<std::vector<int>>& get_original_continent_map() const;
-    const std::vector<std::vector<unsigned char>>& get_continent_bridge_map() const;
-    const std::vector<std::uint32_t>& get_continent_colors() const;
-    const std::vector<std::uint32_t>& get_original_continent_colors() const;
     const std::vector<WorldObject>& get_objects() const;
     const std::vector<Chunk>& get_chunks() const;
 

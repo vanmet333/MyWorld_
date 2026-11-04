@@ -63,7 +63,6 @@ namespace {
         float maximum_zoom;
         float camera_x = 0.0f;
         float camera_y = 0.0f;
-        bool show_continents = false;
         vector<uint32_t> frame_pixels;
     };
 
@@ -252,8 +251,7 @@ namespace {
                     context->base_tile_size * context->zoom_scale,
                     context->camera_x,
                     context->camera_y,
-                    context->frame_pixels,
-                    context->show_continents
+                    context->frame_pixels
                 );
 
                 BITMAPINFO bitmap_info{};
@@ -290,13 +288,6 @@ namespace {
         case WM_KEYDOWN: {
             if (!context)
                 return DefWindowProcW(window, message, w_param, l_param);
-            if (w_param == 'X') {
-                if ((l_param & (1LL << 30)) != 0)
-                    return 0;
-                context->show_continents = !context->show_continents;
-                InvalidateRect(window, nullptr, FALSE);
-                return 0;
-            }
             constexpr float pan_step = 48.0f;
             switch (w_param) {
             case 'W': context->camera_y -= pan_step; break;
@@ -531,26 +522,6 @@ void Render::draw_map_tiles(
     for (thread& worker : workers)
         worker.join();
 
-    if (show_continents) {
-        const auto& continent_map = world.get_original_continent_map();
-        const auto& continent_colors = world.get_original_continent_colors();
-        if (continent_map.size() == tile_map.size()) {
-            for (int screen_y = 0; screen_y < target_map_size; ++screen_y) {
-                const double map_y = (screen_y + 0.5 + camera_y) / tile_size;
-                const int tile_y = static_cast<int>(floor(map_y));
-                if (tile_y < 0 || tile_y >= static_cast<int>(continent_map.size())) continue;
-                for (int screen_x = 0; screen_x < target_map_size; ++screen_x) {
-                    const double map_x = (screen_x + 0.5 + camera_x) / tile_size;
-                    const int tile_x = static_cast<int>(floor(map_x));
-                    if (tile_x < 0 || tile_x >= static_cast<int>(continent_map[tile_y].size())) continue;
-                    const size_t pixel_index = static_cast<size_t>(screen_y) * target_map_size + screen_x;
-                    const int continent_id = continent_map[tile_y][tile_x];
-                    if (continent_id < 0 || static_cast<size_t>(continent_id) >= continent_colors.size()) continue;
-                    frame_pixels[pixel_index] = continent_colors[continent_id];
-                }
-            }
-        }
-    }
 
     // Объекты запрашиваются только через ID тех чанков, которые пересекают экран.
     const auto& chunks = world.get_chunks();
