@@ -9,6 +9,8 @@
 #include <thread>
 #include <stdexcept>
 #include <ppl.h>
+#include <queue>
+#include <cstdint>
 
 using namespace std;
 
@@ -179,6 +181,8 @@ void World::generate_height_map(int height, int width, int octaves, int scale) {
     );
     if (height_map_.empty() || height_map_.front().empty()) return;
 
+    // Keep the generated land inside an irregular, oval-shaped envelope. The
+    // terrain noise bends the coast so it does not read as a rectangular frame.
     const double fade_width = 0.10;
     parallel_for_range(static_cast<size_t>(height), [&](size_t first_row, size_t end_row) {
         for (size_t row = first_row; row < end_row; ++row) {
@@ -245,7 +249,138 @@ void World::generate_tile_map(int height, int width) {
         }
     }
 }
+void World::generate_continent_map()
+{
+    if (height_map_.empty() || height_map_.front().empty()) {
+        continent_map_.clear();
+        continent_colors_.clear();
+        return;
+    }
 
+    const int height = static_cast<int>(height_map_.size());
+    const int width = static_cast<int>(height_map_.front().size());
+
+    continent_map_.assign(
+        height,
+        vector<int>(width, -1)
+    );
+
+    continent_colors_.clear();
+
+    const int dx[8] = {
+        -1, 0, 1,
+        -1,    1,
+        -1, 0, 1
+    };
+
+    const int dy[8] = {
+        -1, -1, -1,
+         0,      0,
+         1,  1,  1
+    };
+
+    int continent_id = 0;
+
+    queue<pair<int, int>> frontier;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+
+            if (continent_map_[y][x] != -1)
+                continue;
+
+            if (height_map_[y][x] <= generation_config_.shallow_water_boundary)
+                continue;
+
+            frontier.push({ x, y });
+            continent_map_[y][x] = continent_id;
+
+            while (!frontier.empty()) {
+
+                const auto [current_x, current_y] = frontier.front();
+                frontier.pop();
+
+                for (int i = 0; i < 8; ++i) {
+
+                    const int next_x = current_x + dx[i];
+                    const int next_y = current_y + dy[i];
+
+                    if (next_x < 0 || next_x >= width ||
+                        next_y < 0 || next_y >= height)
+                        continue;
+
+                    if (continent_map_[next_y][next_x] != -1)
+                        continue;
+
+                    if (height_map_[next_y][next_x] <=
+                        generation_config_.shallow_water_boundary)
+                        continue;
+
+                    continent_map_[next_y][next_x] = continent_id;
+
+                    frontier.push({ next_x, next_y });
+                }
+            }
+
+            ++continent_id;
+        }
+    }
+
+    mt19937 color_engine{ random_device{}() };
+
+    uniform_int_distribution<int> color_distribution(80, 230);
+
+    for (int i = 0; i < continent_id; ++i) {
+
+        const uint32_t red = color_distribution(color_engine);
+        const uint32_t green = color_distribution(color_engine);
+        const uint32_t blue = color_distribution(color_engine);
+
+        const uint32_t color =
+            (red << 16) |
+            (green << 8) |
+            blue;
+
+        continent_colors_.push_back(color);
+    }
+
+    cout << "[WORLD] Generated continents: "
+        << continent_id << endl;
+}
+void World::generate_humidity_map()
+{
+    if (tiled_map_.empty() || tiled_map_.front().empty()) {
+        humidity_map_.clear();
+        return;
+    }
+
+    int height = static_cast<int>(tiled_map_.size());
+    int width = static_cast<int>(tiled_map_.front().size());
+
+    humidity_map_.assign(height, vector<double>(width, 0.0));
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            switch (tiled_map_[y][x]) {
+            case 2:
+                humidity_map_[y][x] = generation_config_.sand_humidity;
+                break;
+            case 3:
+                humidity_map_[y][x] = generation_config_.earth_humidity;
+                break;
+            case 4:
+                humidity_map_[y][x] = generation_config_.mountains_humidity;
+                break;
+            case 5:
+                humidity_map_[y][x] = generation_config_.highlands_humidity;
+                break;
+            default:
+                humidity_map_[y][x] = 0.0;
+                break;
+            }
+        }
+    }
+}
 void World::create_initial_items(const vector<InitialItem>& items) {
     for (const auto& [type, count] : items) {
         switch (type) {
@@ -294,14 +429,14 @@ void World::generate_trees(size_t count) {
 }
 
 void World::generate_minerals(size_t count) {
-    // ОТЛАДКА: Проверяем, с каким количеством вызвалась функция
-    std::cout << "[DEBUG] generate_minerals called with count: " << count << std::endl;
     if (map_width_ <= 0 || map_height_ <= 0 || tiled_map_.empty() || count == 0)
         return;
 
     uniform_int_distribution<int> x_dist(0, map_width_ - 1);
     uniform_int_distribution<int> y_dist(0, map_height_ - 1);
 
+    // Веса руд: индексы совпадают с MineralVariant (Rock..Platinum).
+    // discrete_distribution нормализует сам, так что сумма не обязана быть ровно 1.0.
     std::vector<double> weights = {
         max(0.0, generation_config_.rock_chance),
         max(0.0, generation_config_.copper_chance),
@@ -311,6 +446,7 @@ void World::generate_minerals(size_t count) {
     };
     const double total_weight = accumulate(weights.begin(), weights.end(), 0.0);
     if (total_weight <= 0.0) {
+        // Ничего не задано — считаем, что вся руда это камень.
         fill(weights.begin(), weights.end(), 0.0);
         weights[static_cast<size_t>(MineralVariant::Rock)] = 1.0;
     }
@@ -321,7 +457,6 @@ void World::generate_minerals(size_t count) {
         static_cast<size_t>(max(0, generation_config_.placement_attempt_padding));
 
     size_t attempts = 0;
-    size_t generated = 0; // ОТЛАДКА
     while (count > 0 && attempts++ < max_attempts) {
         const int x = x_dist(random_engine);
         const int y = y_dist(random_engine);
@@ -332,9 +467,7 @@ void World::generate_minerals(size_t count) {
         const int variant = variant_dist(random_engine);
         add_object({ 0, WorldObjectType::Mineral, x, y, 1, 1, false, variant });
         --count;
-        generated++; // ОТЛАДКА
     }
-    std::cout << "[DEBUG] generate_minerals generated: " << generated << std::endl;
 }
 
 bool World::can_place_object(int x, int y, int width, int height, WorldObjectType type) const {
@@ -383,4 +516,13 @@ const vector<vector<double>>& World::get_heat_map() const {
 }
 const vector<vector<int>>& World::get_tiled_map() const {
     return tiled_map_;
+}
+const vector<vector<int>>& World::get_continent_map() const {
+    return continent_map_;
+}
+const vector<uint32_t>& World::get_continent_colors() const {
+    return continent_colors_;
+}
+const vector<vector<double>>& World::get_humidity_map() const {
+    return humidity_map_;
 }

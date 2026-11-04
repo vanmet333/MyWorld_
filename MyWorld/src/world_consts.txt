@@ -12,8 +12,8 @@ persistence=0.45
 deep_water_boundary=0.5
 shallow_water_boundary=0.65
 beach_boundary=0.70
-plains_boundary=0.85
-mountains_boundary=0.95
+plains_boundary=0.9
+mountains_boundary=0.97
 # Minimum area for a continent; smaller land regions are islands.
 continent_min_area_fraction=0.004
 
@@ -38,3 +38,9 @@ tree_height_tiles=3
 # Placement retry budget: count * multiplier + padding.
 placement_attempt_multiplier=30
 placement_attempt_padding=100
+
+# Humidity coefficients by terrain type
+sand_humidity=1.0
+earth_humidity=0.9
+mountains_humidity=0.5
+highlands_humidity=0.1

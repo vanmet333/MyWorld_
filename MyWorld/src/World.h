@@ -10,6 +10,8 @@
 #include <unordered_map>
 #include <cctype>
 
+using namespace std;
+
 struct WorldGenerationConfig {
     int    map_width;
     int    map_height;
@@ -30,31 +32,36 @@ struct WorldGenerationConfig {
     int    tree_height_tiles;
     int    placement_attempt_multiplier;
     int    placement_attempt_padding;
-    // Ore variant chances (should sum to ~1.0; normalized automatically).
+    // Ore variant chances
     int mineral_count;
     double rock_chance;
     double copper_chance;
     double iron_chance;
     double gold_chance;
     double platinum_chance;
+    //Humidity
+    double sand_humidity;
+    double earth_humidity;
+    double mountains_humidity;
+    double highlands_humidity;
 
-    static WorldGenerationConfig load(const std::string& path = "world_consts.txt") {
+    static WorldGenerationConfig load(const string& path = "world_consts.txt") {
         WorldGenerationConfig c{};
 
-        std::ifstream f(path);
+        ifstream f(path);
         if (!f) return c;
 
-        std::unordered_map<std::string, std::string> kv;
-        std::string line;
-        while (std::getline(f, line)) {
+        unordered_map<string, string> kv;
+        string line;
+        while (getline(f, line)) {
             auto hash = line.find_first_of("#;");
-            if (hash != std::string::npos) line.erase(hash);
+            if (hash != string::npos) line.erase(hash);
             auto eq = line.find('=');
-            if (eq == std::string::npos) continue;
+            if (eq == string::npos) continue;
             auto key = line.substr(0, eq);
             auto val = line.substr(eq + 1);
-            auto trim = [](std::string& s) {
-                auto ws = [](char ch) { return std::isspace((unsigned char)ch); };
+            auto trim = [](string& s) {
+                auto ws = [](char ch) { return isspace((unsigned char)ch); };
                 while (!s.empty() && ws(s.front())) s.erase(s.begin());
                 while (!s.empty() && ws(s.back()))  s.pop_back();
                 };
@@ -65,9 +72,9 @@ struct WorldGenerationConfig {
         auto get = [&](const char* k, auto& field) {
             auto it = kv.find(k);
             if (it == kv.end()) return;
-            using T = std::decay_t<decltype(field)>;
-            if      constexpr (std::is_same_v<T, int>)    field = std::stoi(it->second);
-            else if constexpr (std::is_same_v<T, double>) field = std::stod(it->second);
+            using T = decay_t<decltype(field)>;
+            if      constexpr (is_same_v<T, int>)    field = stoi(it->second);
+            else if constexpr (is_same_v<T, double>) field = stod(it->second);
             };
 
         get("map_width", c.map_width);
@@ -100,7 +107,7 @@ struct WorldGenerationConfig {
     }
 };
 
-std::vector<std::vector<double>> generate_value_noise(
+vector<vector<double>> generate_value_noise(
     int height, int width, int octaves, int scale = 1, double persistence = 0.5
 );
 class World
@@ -112,22 +119,27 @@ public:
     void generate_height_map(int height, int width, int octaves, int scale = 0);
     void generate_heat_map(int height, int width, int octaves, int scale = 0);
     void generate_tile_map(int height, int width);
-    void create_initial_items(const std::vector<InitialItem>& items);
+    void create_initial_items(const vector<InitialItem>& items);
     void update_chunks(double delta_time);
+    void generate_continent_map(); 
+    void generate_humidity_map();
 
-    const std::vector<std::vector<double>>& get_height_map() const;
-    const std::vector<std::vector<double>>& get_heat_map() const;
-    const std::vector<std::vector<int>>& get_tiled_map() const;
-    const std::vector<WorldObject>& get_objects() const;
-    const std::vector<Chunk>& get_chunks() const;
+    const vector<vector<int>>& get_continent_map() const;
+    const vector<uint32_t>& get_continent_colors() const;
+    const vector<vector<double>>& get_height_map() const;
+    const vector<vector<double>>& get_heat_map() const;
+    const vector<vector<int>>& get_tiled_map() const;
+    const vector<WorldObject>& get_objects() const;
+    const vector<Chunk>& get_chunks() const;
+    const vector<vector<double>>& get_humidity_map() const;
 
 
 private:
-    void generate_trees(std::size_t count);
-    void generate_minerals(std::size_t count);
+    void generate_trees(size_t count);
+    void generate_minerals(size_t count);
     void add_object(WorldObject object);
     bool can_place_object(int x, int y, int width, int height, WorldObjectType type) const;
-    std::size_t chunk_index(int chunk_x, int chunk_y) const;
+    size_t chunk_index(int chunk_x, int chunk_y) const;
 
     int map_width_{};
     int map_height_{};
@@ -135,16 +147,14 @@ private:
     int chunks_y_{};
     ObjectId next_object_id_{ 1 };
     WorldGenerationConfig generation_config_;
-    std::vector<std::vector<double>> height_map_;
-    std::vector<std::vector<double>> heat_map_;
-    std::vector<std::vector<int>> tiled_map_;
-    std::vector<std::vector<int>> continent_map_;
-    std::vector<std::vector<int>> original_continent_map_;
-    std::vector<std::vector<unsigned char>> continent_bridge_map_;
-    std::vector<std::uint32_t> continent_colors_;
-    std::vector<std::uint32_t> original_continent_colors_;
-    std::vector<Chunk> chunks_;
-    std::vector<WorldObject> objects_;
+    vector<vector<double>> height_map_;
+    vector<vector<double>> heat_map_;
+    vector<vector<int>> tiled_map_;
+    vector<vector<int>> continent_map_;
+    vector<vector<double>> humidity_map_;
+    vector<uint32_t> continent_colors_;
+    vector<Chunk> chunks_;
+    vector<WorldObject> objects_;
 };
 
 

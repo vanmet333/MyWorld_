@@ -60,7 +60,8 @@ namespace {
                     key == "beach_boundary" || key == "plains_boundary" || key == "mountains_boundary" ||
                     key == "continent_min_area_fraction" ||
                     key == "rock_chance" || key == "copper_chance" || key == "iron_chance" ||
-                    key == "gold_chance" || key == "platinum_chance")
+                    key == "gold_chance" || key == "platinum_chance" || key == "sand_humidity" ||
+                    key == "earth_humidity" ||key == "mountains_humidity" || key == "highlands_humidity")
                 {
                     const double parsed_value = stod(value);
                     if (!isfinite(parsed_value)) continue;
@@ -75,6 +76,10 @@ namespace {
                     else if (key == "iron_chance") config.iron_chance = parsed_value;
                     else if (key == "gold_chance") config.gold_chance = parsed_value;
                     else if (key == "platinum_chance") config.platinum_chance = parsed_value;
+                    else if (key == "sand_humidity") config.sand_humidity = parsed_value;
+                    else if (key == "earth_humidity") config.earth_humidity = parsed_value;
+                    else if (key == "mountains_humidity") config.mountains_humidity = parsed_value;
+                    else if (key == "highlands_humidity") config.highlands_humidity = parsed_value;
                 }
                 else {
                     const int parsed_value = stoi(value);
@@ -130,6 +135,7 @@ void Game::start()
         octaves,
         config.scale
     );
+    world_.generate_continent_map();
     world_.generate_heat_map(
         map_height,
         map_width,
@@ -137,6 +143,8 @@ void Game::start()
         config.heat_map_scale
     );
     world_.generate_tile_map(map_height, map_width);
+    world_.generate_humidity_map();
+
     world_.create_initial_items({
         { WorldObjectType::Tree, static_cast<size_t>(config.tree_count) },
         { WorldObjectType::Mineral, static_cast<size_t>(config.mineral_count) }

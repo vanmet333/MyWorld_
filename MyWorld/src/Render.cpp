@@ -64,6 +64,7 @@ namespace {
         float camera_x = 0.0f;
         float camera_y = 0.0f;
         vector<uint32_t> frame_pixels;
+        bool show_continents = false;
     };
 
     struct TileTexture {
@@ -297,7 +298,8 @@ namespace {
                     context->base_tile_size * context->zoom_scale,
                     context->camera_x,
                     context->camera_y,
-                    context->frame_pixels
+                    context->frame_pixels,
+                    context->show_continents
                 );
 
                 BITMAPINFO bitmap_info{};
@@ -336,6 +338,13 @@ namespace {
                 return DefWindowProcW(window, message, w_param, l_param);
             constexpr float pan_step = 48.0f;
             switch (w_param) {
+            case 'C':
+                // Игнорируем автоповтор клавиши, чтобы удержание C не переключало режим многократно.
+                if ((l_param & (1LL << 30)) == 0) {
+                    context->show_continents = !context->show_continents;
+                    InvalidateRect(window, nullptr, FALSE);
+                }
+                return 0;
             case 'W': context->camera_y -= pan_step; break;
             case 'S': context->camera_y += pan_step; break;
             case 'A': context->camera_x -= pan_step; break;
@@ -465,6 +474,8 @@ void Render::draw_map_tiles(
     bool show_continents
 ) const {
     const auto& tile_map = world.get_tiled_map();
+    const auto& continent_map = world.get_continent_map();
+    const auto& continent_colors = world.get_continent_colors();
     if (tile_map.empty() || tile_map.front().empty() || tile_size <= 0.0f)
         return;
 
@@ -515,42 +526,66 @@ void Render::draw_map_tiles(
                 if (tile_type < 0 || tile_type >= static_cast<int>(fallback_colors.size()))
                     continue;
 
-                if (use_flat_colors || !textures ||
-                    (*textures)[tile_type].pixels.empty() ||
-                    (*textures)[tile_type].width == 0 ||
-                    (*textures)[tile_type].height == 0) {
+                const bool has_texture = !use_flat_colors && textures &&
+                    !(*textures)[tile_type].pixels.empty() &&
+                    (*textures)[tile_type].width > 0 &&
+                    (*textures)[tile_type].height > 0;
+
+                if (!has_texture) {
                     output_row[screen_x] = fallback_colors[tile_type];
-                    continue;
+                }
+                else {
+                    const size_t transform_index = static_cast<size_t>(tile_y) * map_width +
+                        static_cast<size_t>(tile_x);
+                    const int transform = transform_index < tile_transforms.size()
+                        ? tile_transforms[transform_index]
+                        : 0;
+                    double texture_x = map_x - tile_x;
+                    double texture_y = local_y;
+
+                    // Undo the tile's clockwise rotation, then its horizontal mirror.
+                    for (int rotation = 0; rotation < transform % 4; ++rotation) {
+                        const double previous_x = texture_x;
+                        texture_x = texture_y;
+                        texture_y = 1.0 - previous_x;
+                    }
+                    if (transform >= 4)
+                        texture_x = 1.0 - texture_x;
+
+                    const TileTexture& texture = (*textures)[tile_type];
+                    const size_t source_x = min(
+                        static_cast<size_t>(texture_x * texture.width),
+                        static_cast<size_t>(texture.width - 1)
+                    );
+                    const size_t source_y = min(
+                        static_cast<size_t>(texture_y * texture.height),
+                        static_cast<size_t>(texture.height - 1)
+                    );
+                    output_row[screen_x] = texture.pixels[source_y * texture.width + source_x];
                 }
 
-                const size_t transform_index = static_cast<size_t>(tile_y) * map_width +
-                    static_cast<size_t>(tile_x);
-                const int transform = transform_index < tile_transforms.size()
-                    ? tile_transforms[transform_index]
-                    : 0;
-                double local_x = map_x - tile_x;
-                double texture_x = local_x;
-                double texture_y = local_y;
+                // Континенты накладываются поверх поверхности с непрозрачностью 70%
+                // (то есть 30% прозрачности). Вода с ID континента -1 не окрашивается.
+                if (show_continents &&
+                    static_cast<size_t>(tile_y) < continent_map.size() &&
+                    static_cast<size_t>(tile_x) < continent_map[static_cast<size_t>(tile_y)].size()) {
+                    const int continent_id = continent_map[static_cast<size_t>(tile_y)][static_cast<size_t>(tile_x)];
+                    if (continent_id >= 0 && static_cast<size_t>(continent_id) < continent_colors.size()) {
+                        constexpr uint32_t overlay_alpha = 179; // 70% непрозрачности
+                        constexpr uint32_t inverse_alpha = 255 - overlay_alpha;
+                        const uint32_t continent_color = continent_colors[static_cast<size_t>(continent_id)];
+                        const uint32_t base_color = output_row[screen_x];
 
-                // Undo the tile's clockwise rotation, then its horizontal mirror.
-                for (int rotation = 0; rotation < transform % 4; ++rotation) {
-                    const double previous_x = texture_x;
-                    texture_x = texture_y;
-                    texture_y = 1.0 - previous_x;
+                        const uint32_t red = ((((continent_color >> 16) & 0xffu) * overlay_alpha) +
+                            (((base_color >> 16) & 0xffu) * inverse_alpha) + 127u) / 255u;
+                        const uint32_t green = ((((continent_color >> 8) & 0xffu) * overlay_alpha) +
+                            (((base_color >> 8) & 0xffu) * inverse_alpha) + 127u) / 255u;
+                        const uint32_t blue = (((continent_color & 0xffu) * overlay_alpha) +
+                            ((base_color & 0xffu) * inverse_alpha) + 127u) / 255u;
+
+                        output_row[screen_x] = (red << 16) | (green << 8) | blue;
+                    }
                 }
-                if (transform >= 4)
-                    texture_x = 1.0 - texture_x;
-
-                const TileTexture& texture = (*textures)[tile_type];
-                const size_t source_x = min(
-                    static_cast<size_t>(texture_x * texture.width),
-                    static_cast<size_t>(texture.width - 1)
-                );
-                const size_t source_y = min(
-                    static_cast<size_t>(texture_y * texture.height),
-                    static_cast<size_t>(texture.height - 1)
-                );
-                output_row[screen_x] = texture.pixels[source_y * texture.width + source_x];
             }
         }
         };
