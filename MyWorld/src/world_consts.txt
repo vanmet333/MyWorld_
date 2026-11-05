@@ -14,6 +14,10 @@ shallow_water_boundary=0.65
 beach_boundary=0.70
 plains_boundary=0.9
 mountains_boundary=0.97
+cold_biome_boundary=0.3
+hot_biome_boundary=0.7
+dry_biome_boundary=0.3
+wet_biome_boundary=0.7
 # Minimum area for a continent; smaller land regions are islands.
 continent_min_area_fraction=0.004
 
@@ -41,6 +45,6 @@ placement_attempt_padding=100
 
 # Humidity coefficients by terrain type
 sand_humidity=1.0
-plains_humidity=0.9
+plains_humidity=0.99
 mountains_humidity=0.8
 highlands_humidity=0.1

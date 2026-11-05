@@ -349,6 +349,7 @@ void World::generate_continent_map()
         << continent_id << endl;
 }
 
+
 void World::generate_humidity_map(int height, int width, int octaves, int scale)
 {
     if (tiled_map_.empty() || tiled_map_.front().empty()) {
@@ -358,6 +359,7 @@ void World::generate_humidity_map(int height, int width, int octaves, int scale)
 
     auto permeability = [&](int tile) -> double {
         double c = 1.0;
+
         switch (tile) {
         case 2: c = generation_config_.sand_humidity;      break;
         case 3: c = generation_config_.plains_humidity;    break;
@@ -365,74 +367,264 @@ void World::generate_humidity_map(int height, int width, int octaves, int scale)
         case 5: c = generation_config_.highlands_humidity; break;
         default: c = 1.0; break;
         }
+
         if (!(c >= 0.0)) c = 0.0;
-        if (c > 0.999)   c = 0.999;
+        if (c > 0.999) c = 0.999;
+
         return c;
         };
-    
-    constexpr double SOURCE = 100.0;
 
-    const int dx[4] = { -1, +1,  0,  0 };
-    const int dy[4] = { 0,  0, -1, +1 };
+    constexpr double SOURCE = 1.0;
+    constexpr double DIAGONAL_DISTANCE = 1.4142135623730951;
 
-    vector<vector<double>> buf[4];
-    for (int d = 0; d < 4; ++d)
-        buf[d].assign(height, vector<double>(width, 0.0));
+    // Четыре прямых направления ветра.
+    const int cardinal_dx[4] = { -1, +1,  0,  0 };
+    const int cardinal_dy[4] = { 0,  0, -1, +1 };
 
-    for (int y = 0; y < height; ++y)
-        for (int x = 0; x < width; ++x) {
-            const int t = tiled_map_[y][x];
-            if (t == 0 || t == 1)
-                for (int d = 0; d < 4; ++d) buf[d][y][x] = SOURCE;
-        }
+    // Четыре диагональных направления ветра.
+    const int diagonal_dx[4] = { -1, +1, -1, +1 };
+    const int diagonal_dy[4] = { -1, -1, +1, +1 };
+
+    // Каждый ветер имеет собственный буфер.
+    vector<vector<double>> cardinal_buf[4];
+    vector<vector<double>> diagonal_buf[4];
 
     for (int d = 0; d < 4; ++d) {
-        auto& b = buf[d];
-        const bool y_rev = (dy[d] > 0);
-        const bool x_rev = (dx[d] > 0);
-        for (int yo = 0; yo < height; ++yo) {
-            const int y = y_rev ? (height - 1 - yo) : yo;
-            for (int xo = 0; xo < width; ++xo) {
-                const int x = x_rev ? (width - 1 - xo) : xo;
-                const int t = tiled_map_[y][x];
-                if (t == 0 || t == 1) continue;
-                const double k = permeability(t);
-                const int py = y + dy[d];
-                const int px = x + dx[d];
-                double base = 0.0;
-                if (py >= 0 && py < height && px >= 0 && px < width)
-                    base = b[py][px];
-                b[y][x] = base * k;
+        cardinal_buf[d].assign(
+            height, vector<double>(width, 0.0)
+        );
+
+        diagonal_buf[d].assign(
+            height, vector<double>(width, 0.0)
+        );
+    }
+
+    // Океан является источником влаги для каждого направления.
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const int t = tiled_map_[y][x];
+
+            if (t == 0 || t == 1) {
+                for (int d = 0; d < 4; ++d) {
+                    cardinal_buf[d][y][x] = SOURCE;
+                    diagonal_buf[d][y][x] = SOURCE;
+                }
             }
         }
     }
 
-    // Суммируем 4 буфера. На песке — гладкий max (p-норма), а не жёсткий.
-    humidity_map_.assign(height, vector<double>(width, 0.0));
+    // Универсальное распространение одного ветра.
+    // Порядок обхода гарантирует, что предыдущий тайл
+    // по направлению ветра уже обработан.
+    const auto propagate_wind = [&](vector<vector<double>>& buffer,
+        int dx, int dy, double distance)
+        {
+            const bool y_rev = (dy > 0);
+            const bool x_rev = (dx > 0);
+
+            for (int yo = 0; yo < height; ++yo) {
+                const int y = y_rev ? (height - 1 - yo) : yo;
+
+                for (int xo = 0; xo < width; ++xo) {
+                    const int x = x_rev ? (width - 1 - xo) : xo;
+
+                    const int t = tiled_map_[y][x];
+
+                    // Вода сохраняет источник.
+                    if (t == 0 || t == 1)
+                        continue;
+
+                    const int py = y + dy;
+                    const int px = x + dx;
+
+                    double base = 0.0;
+
+                    if (py >= 0 && py < height &&
+                        px >= 0 && px < width) {
+                        base = buffer[py][px];
+                    }
+
+                    // Затухание влаги при прохождении тайла.
+                    // Для диагоналей учитывается увеличенный путь.
+                    const double k = pow(permeability(t), distance);
+
+                    buffer[y][x] = base * k;
+                }
+            }
+        };
+
+    // === Четыре прямых ветра ===
+    for (int d = 0; d < 4; ++d) {
+        propagate_wind(
+            cardinal_buf[d],
+            cardinal_dx[d],
+            cardinal_dy[d],
+            1.0
+        );
+    }
+
+    // === Четыре диагональных ветра ===
+    for (int d = 0; d < 4; ++d) {
+        propagate_wind(
+            diagonal_buf[d],
+            diagonal_dx[d],
+            diagonal_dy[d],
+            DIAGONAL_DISTANCE
+        );
+    }
+
+    // === Объединение всех восьми направлений ===
+
+    constexpr int WIND_COUNT = 8;
+    constexpr double P = 16.0;
+
+    humidity_map_.assign(
+        height, vector<double>(width, 0.0)
+    );
+
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
+
             if (tiled_map_[y][x] == 2) {
-                constexpr double P = 16.0;           // 8..32; больше = ближе к max
+
+                // На пляжах используем гладкий максимум
+                // из всех восьми направлений.
                 double s = 0.0;
+
                 for (int d = 0; d < 4; ++d) {
-                    const double v = buf[d][y][x];
-                    if (v > 0.0) s += std::pow(v, P);
+                    const double cardinal = cardinal_buf[d][y][x];
+                    const double diagonal = diagonal_buf[d][y][x];
+
+                    if (cardinal > 0.0)
+                        s += pow(cardinal, P);
+
+                    if (diagonal > 0.0)
+                        s += pow(diagonal, P);
                 }
-                const double m = (s > 0.0) ? std::pow(s, 1.0 / P) : 0.0;
-                humidity_map_[y][x] = m * 4.0;
+
+                const double m = (s > 0.0)
+                    ? pow(s, 1.0 / P)
+                    : 0.0;
+
+                humidity_map_[y][x] = m * WIND_COUNT;
             }
             else {
+
+                // На остальных тайлах суммируем
+                // вклад всех восьми ветров.
                 double s = 0.0;
-                for (int d = 0; d < 4; ++d) s += buf[d][y][x];
+
+                for (int d = 0; d < 4; ++d) {
+                    s += cardinal_buf[d][y][x];
+                    s += diagonal_buf[d][y][x];
+                }
+
                 humidity_map_[y][x] = s;
             }
         }
     }
 
-    vector<vector<double>> value_noise = generate_value_noise(height, width, octaves, scale, generation_config_.persistence);
+    // Нормализация по восьми направлениям.
+    for (auto& row : humidity_map_) {
+        for (double& v : row)
+            v /= WIND_COUNT;
+    }
 
-    for (auto& row : humidity_map_)
-        for (double& v : row) v /= 4.0;
+    // Шум оставлен для дальнейшего использования
+    vector<vector<double>> value_noise =
+        generate_value_noise(
+            height,
+            width,
+            octaves,
+            scale,
+            generation_config_.persistence
+        );
+}
+
+void World::generate_biome_map(int height, int width) {
+    if (height <= 0 || width <= 0 ||
+        tiled_map_.size() != static_cast<size_t>(height) ||
+        heat_map_.size() != static_cast<size_t>(height) ||
+        humidity_map_.size() != static_cast<size_t>(height)) {
+        biome_map_.clear();
+        return;
+    }
+
+    // Заполняем именно поле класса!
+    // 3 = plains по умолчанию.
+    biome_map_.assign(height, vector<int>(width, -1));
+
+    for (int y = 0; y < height; ++y) {
+        if (tiled_map_[y].size() != static_cast<size_t>(width) ||
+            heat_map_[y].size() != static_cast<size_t>(width) ||
+            humidity_map_[y].size() != static_cast<size_t>(width)) {
+            biome_map_.clear();
+            return;
+        }
+
+        for (int x = 0; x < width; ++x) {
+
+            // Биомы назначаем только обычной суше.
+            if (tiled_map_[y][x] != 3)
+                continue;
+
+            const double temp = heat_map_[y][x];
+            const double hum = humidity_map_[y][x];
+
+            // Холодные биомы
+            if (temp < generation_config_.cold_biome_boundary) {
+
+                if (hum < generation_config_.dry_biome_boundary)
+                    biome_map_[y][x] = 0; // snow_plains
+
+                else if (hum <= generation_config_.wet_biome_boundary)
+                    biome_map_[y][x] = 1; // snow_taiga
+
+                else
+                    biome_map_[y][x] = 2; // taiga
+            }
+
+            // Умеренные биомы
+            else if (temp <= generation_config_.hot_biome_boundary) {
+
+                if (hum < generation_config_.dry_biome_boundary)
+                    biome_map_[y][x] = 3; // plains
+
+                else if (hum <= generation_config_.wet_biome_boundary)
+                    biome_map_[y][x] = 4; // forest
+
+                else
+                    biome_map_[y][x] = 5; // dark_forest
+            }
+
+            // Жаркие биомы
+            else {
+
+                if (hum < generation_config_.dry_biome_boundary)
+                    biome_map_[y][x] = 6; // desert
+
+                else if (hum <= generation_config_.wet_biome_boundary)
+                    biome_map_[y][x] = 7; // savanna
+
+                else
+                    biome_map_[y][x] = 8; // jungle
+            }
+        }
+    }
+
+    // Диагностика распределения биомов.
+    vector<size_t> counts(9, 0);
+    for (const auto& row : biome_map_) {
+        for (int id : row) {
+            if (id >= 0 && id < 9)
+                ++counts[id];
+        }
+    }
+
+    cout << "[BIOMES] ";
+    for (int i = 0; i < 9; ++i)
+        cout << i << "=" << counts[i] << " ";
+    cout << endl;
 }
 
 void World::create_initial_items(const vector<InitialItem>& items) {
@@ -561,12 +753,15 @@ void World::update_chunks(double delta_time) {
 
 const vector<WorldObject>& World::get_objects() const { return objects_; }
 const vector<Chunk>& World::get_chunks() const { return chunks_; }
-
 const vector<vector<double>>& World::get_height_map() const {
     return height_map_;
 }
 const vector<vector<double>>& World::get_heat_map() const {
     return heat_map_;
+}
+const vector<vector<int>>& World::get_biome_map() const
+{
+    return biome_map_;
 }
 const vector<vector<int>>& World::get_tiled_map() const {
     return tiled_map_;

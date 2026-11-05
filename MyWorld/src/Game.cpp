@@ -61,7 +61,8 @@ namespace {
                     key == "continent_min_area_fraction" ||
                     key == "rock_chance" || key == "copper_chance" || key == "iron_chance" ||
                     key == "gold_chance" || key == "platinum_chance" || key == "sand_humidity" ||
-                    key == "plains_humidity" ||key == "mountains_humidity" || key == "highlands_humidity")
+                    key == "plains_humidity" ||key == "mountains_humidity" || key == "highlands_humidity" ||
+                    key == "cold_biome_boundary" || key == "hot_biome_boundary" || key == "wet_biome_boundary" || key == "dry_biome_boundary")
                 {
                     const double parsed_value = stod(value);
                     if (!isfinite(parsed_value)) continue;
@@ -80,6 +81,10 @@ namespace {
                     else if (key == "plains_humidity") config.plains_humidity = parsed_value;
                     else if (key == "mountains_humidity") config.mountains_humidity = parsed_value;
                     else if (key == "highlands_humidity") config.highlands_humidity = parsed_value;
+                    else if (key == "cold_biome_boundary") config.cold_biome_boundary = parsed_value;
+                    else if (key == "hot_biome_boundary") config.hot_biome_boundary = parsed_value;
+                    else if (key == "wet_biome_boundary") config.wet_biome_boundary = parsed_value;
+                    else if (key == "dry_biome_boundary") config.dry_biome_boundary = parsed_value;
                 }
                 else {
                     const int parsed_value = stoi(value);
@@ -144,7 +149,7 @@ void Game::start()
     );
     world_.generate_tile_map(map_height, map_width);
     world_.generate_humidity_map(map_height, map_width, octaves, config.scale);
-
+    world_.generate_biome_map(map_height, map_width);
     world_.create_initial_items({
         { WorldObjectType::Tree, static_cast<size_t>(config.tree_count) },
         { WorldObjectType::Mineral, static_cast<size_t>(config.mineral_count) }

@@ -44,6 +44,12 @@ struct WorldGenerationConfig {
     double plains_humidity;
     double mountains_humidity;
     double highlands_humidity;
+    //Biomes
+    double cold_biome_boundary;
+    double hot_biome_boundary;
+    double dry_biome_boundary;
+    double wet_biome_boundary;
+
 
     static WorldGenerationConfig load(const string& path = "world_consts.txt") {
         WorldGenerationConfig c{};
@@ -88,6 +94,10 @@ struct WorldGenerationConfig {
         get("beach_boundary", c.beach_boundary);
         get("plains_boundary", c.plains_boundary);
         get("mountains_boundary", c.mountains_boundary);
+        get("cold_biome_boundary", c.cold_biome_boundary);
+        get("hot_biome_boundary", c.hot_biome_boundary);
+        get("dry_biome_boundary", c.dry_biome_boundary);
+        get("wet_biome_boundary", c.wet_biome_boundary);
         get("mineral_count", c.mineral_count);
         get("rock_chance", c.rock_chance);      
         get("copper_chance", c.copper_chance);
@@ -123,11 +133,12 @@ public:
     void update_chunks(double delta_time);
     void generate_continent_map(); 
     void generate_humidity_map(int height, int width, int octaves, int scale);
-
+    void generate_biome_map(int height, int width);
     const vector<vector<int>>& get_continent_map() const;
     const vector<uint32_t>& get_continent_colors() const;
     const vector<vector<double>>& get_height_map() const;
     const vector<vector<double>>& get_heat_map() const;
+    const vector<vector<int>>& get_biome_map() const;
     const vector<vector<int>>& get_tiled_map() const;
     const vector<WorldObject>& get_objects() const;
     const vector<Chunk>& get_chunks() const;
@@ -152,6 +163,7 @@ private:
     vector<vector<int>> tiled_map_;
     vector<vector<int>> continent_map_;
     vector<vector<double>> humidity_map_;
+    vector<vector<int>> biome_map_;
     vector<uint32_t> continent_colors_;
     vector<Chunk> chunks_;
     vector<WorldObject> objects_;

@@ -7,7 +7,7 @@
 
 #include "Render.h"
 #include "World.h"
-
+#include <iostream>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -174,6 +174,32 @@ namespace {
         return textures;
     }
 
+
+    // Биомные текстуры обычной суши. Порядок соответствует ID в biome_map_:
+    // 0 snow_plains, 1 snow_taiga, 2 taiga, 3 plains, 4 forest,
+    // 5 dark_forest, 6 desert, 7 savanna, 8 jungle.
+    vector<TileTexture>& biome_textures() {
+        static vector<TileTexture> textures = [] {
+            const array<const wchar_t*, 9> file_names = {
+                L"snow_plains.png",
+                L"snow_taiga.png",
+                L"taiga.png",
+                L"plains.png",
+                L"forest.png",
+                L"dark_forest.png",
+                L"desert.png",
+                L"savanna.png",
+                L"jungle.png"
+            };
+            const filesystem::path directory = resolve_asset_directory(L"assets/textures/terrain");
+            vector<TileTexture> loaded;
+            loaded.reserve(file_names.size());
+            for (const wchar_t* file_name : file_names)
+                loaded.push_back(load_texture(directory / file_name));
+            return loaded;
+            }();
+        return textures;
+    }
     vector<TileTexture>& tree_textures() {
         static vector<TileTexture> textures = [] {
             vector<TileTexture> loaded;
@@ -497,6 +523,7 @@ void Render::draw_map_tiles(
 )
 const {
     const auto& tile_map = world.get_tiled_map();
+    const auto& biome_map = world.get_biome_map();
     const auto& continent_map = world.get_continent_map();
     const auto& continent_colors = world.get_continent_colors();
     if (tile_map.empty() || tile_map.front().empty() || tile_size <= 0.0f)
@@ -508,6 +535,7 @@ const {
             return;
     }
 
+    // Fallback-цвета старых типов ландшафта: вода, пляж, равнина, горы, снег.
     const array<uint32_t, 6> fallback_colors = {
         (16u << 16) | (55u << 8) | 140u,
         (15u << 16) | (92u << 8) | 215u,
@@ -516,8 +544,23 @@ const {
         (103u << 16) | (103u << 8) | 103u,
         (205u << 16) | (223u << 8) | 249u
     };
+
+    // Fallback-цвета биомов (порядок соответствует ID в biome_map).
+    // Для plains сохранён прежний цвет обычной суши.
+    const array<uint32_t, 9> biome_fallback_colors = {
+        (255u << 16) | (250u << 8) | 250u, // 0 snow_plains
+        (240u << 16) | (248u << 8) | 255u, // 1 snow_taiga
+        (5u << 16) | (54u << 8) | 5u,      // 2 taiga
+        (23u << 16) | (165u << 8) | 39u,   // 3 plains
+        (15u << 16) | (145u << 8) | 29u,   // 4 forest
+        (74u << 16) | (49u << 8) | 35u,    // 5 dark_forest
+        (255u << 16) | (211u << 8) | 78u,  // 6 desert
+        (237u << 16) | (164u << 8) | 35u,  // 7 savanna
+        (10u << 16) | (54u << 8) | 23u    // 8 jungle
+    };
     const bool use_flat_colors = tile_size < 7.0f;
     vector<TileTexture>* textures = use_flat_colors ? nullptr : &tile_textures();
+    vector<TileTexture>* biomes = use_flat_colors ? nullptr : &biome_textures();
     if (frame_pixels.size() != static_cast<size_t>(target_map_size) * target_map_size)
         frame_pixels.resize(static_cast<size_t>(target_map_size) * target_map_size);
     fill(frame_pixels.begin(), frame_pixels.end(), 0u);
@@ -612,13 +655,45 @@ const {
                 if (tile_type < 0 || tile_type >= static_cast<int>(fallback_colors.size()))
                     continue;
 
-                const bool has_texture = !use_flat_colors && textures &&
-                    !(*textures)[tile_type].pixels.empty() &&
-                    (*textures)[tile_type].width > 0 &&
-                    (*textures)[tile_type].height > 0;
+                // Обычная суша (tile_type == 3) получает текстуру из biome_map.
+                // Вода, пляж, горы и высокогорье (типы 0, 1, 2, 4, 5)
+                // продолжают использовать прежние текстуры из tile_map.
+                const TileTexture* selected_texture = nullptr;
+                if (!use_flat_colors) {
+                    if (tile_type == 3 && biomes &&
+                        static_cast<size_t>(tile_y) < biome_map.size() &&
+                        static_cast<size_t>(tile_x) < biome_map[static_cast<size_t>(tile_y)].size()) {
+                        const int biome_id = biome_map[static_cast<size_t>(tile_y)][static_cast<size_t>(tile_x)];
+                        if (biome_id >= 0 && static_cast<size_t>(biome_id) < biomes->size()) {
+                            const TileTexture& biome_texture = (*biomes)[static_cast<size_t>(biome_id)];
+                            if (!biome_texture.pixels.empty() && biome_texture.width > 0 && biome_texture.height > 0)
+                                selected_texture = &biome_texture;
+                        }
+                    }
+
+                    // Если biome_map отсутствует/некорректна или файл биома
+                    // не загрузился, используем старую plains.png.
+                    if (!selected_texture && textures &&
+                        static_cast<size_t>(tile_type) < textures->size()) {
+                        const TileTexture& legacy_texture = (*textures)[static_cast<size_t>(tile_type)];
+                        if (!legacy_texture.pixels.empty() && legacy_texture.width > 0 && legacy_texture.height > 0)
+                            selected_texture = &legacy_texture;
+                    }
+                }
+
+                const bool has_texture = selected_texture != nullptr;
+
+                uint32_t fallback_color = fallback_colors[tile_type];
+                if (tile_type == 3 &&
+                    static_cast<size_t>(tile_y) < biome_map.size() &&
+                    static_cast<size_t>(tile_x) < biome_map[static_cast<size_t>(tile_y)].size()) {
+                    const int biome_id = biome_map[static_cast<size_t>(tile_y)][static_cast<size_t>(tile_x)];
+                    if (biome_id >= 0 && static_cast<size_t>(biome_id) < biome_fallback_colors.size())
+                        fallback_color = biome_fallback_colors[static_cast<size_t>(biome_id)];
+                }
 
                 if (!has_texture) {
-                    output_row[screen_x] = fallback_colors[tile_type];
+                    output_row[screen_x] = fallback_color;
                 }
                 else {
                     const size_t transform_index = static_cast<size_t>(tile_y) * map_width +
@@ -638,7 +713,7 @@ const {
                     if (transform >= 4)
                         texture_x = 1.0 - texture_x;
 
-                    const TileTexture& texture = (*textures)[tile_type];
+                    const TileTexture& texture = *selected_texture;
                     const size_t source_x = min(
                         static_cast<size_t>(texture_x * texture.width),
                         static_cast<size_t>(texture.width - 1)
