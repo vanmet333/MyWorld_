@@ -249,6 +249,7 @@ void World::generate_tile_map(int height, int width) {
         }
     }
 }
+
 void World::generate_continent_map()
 {
     if (height_map_.empty() || height_map_.front().empty()) {
@@ -347,40 +348,93 @@ void World::generate_continent_map()
     cout << "[WORLD] Generated continents: "
         << continent_id << endl;
 }
-void World::generate_humidity_map()
+
+void World::generate_humidity_map(int height, int width, int octaves, int scale)
 {
     if (tiled_map_.empty() || tiled_map_.front().empty()) {
         humidity_map_.clear();
         return;
     }
 
-    int height = static_cast<int>(tiled_map_.size());
-    int width = static_cast<int>(tiled_map_.front().size());
+    auto permeability = [&](int tile) -> double {
+        double c = 1.0;
+        switch (tile) {
+        case 2: c = generation_config_.sand_humidity;      break;
+        case 3: c = generation_config_.plains_humidity;    break;
+        case 4: c = generation_config_.mountains_humidity; break;
+        case 5: c = generation_config_.highlands_humidity; break;
+        default: c = 1.0; break;
+        }
+        if (!(c >= 0.0)) c = 0.0;
+        if (c > 0.999)   c = 0.999;
+        return c;
+        };
+    
+    constexpr double SOURCE = 100.0;
 
-    humidity_map_.assign(height, vector<double>(width, 0.0));
+    const int dx[4] = { -1, +1,  0,  0 };
+    const int dy[4] = { 0,  0, -1, +1 };
 
-    for (int y = 0; y < height; ++y) {
+    vector<vector<double>> buf[4];
+    for (int d = 0; d < 4; ++d)
+        buf[d].assign(height, vector<double>(width, 0.0));
+
+    for (int y = 0; y < height; ++y)
         for (int x = 0; x < width; ++x) {
-            switch (tiled_map_[y][x]) {
-            case 2:
-                humidity_map_[y][x] = generation_config_.sand_humidity;
-                break;
-            case 3:
-                humidity_map_[y][x] = generation_config_.earth_humidity;
-                break;
-            case 4:
-                humidity_map_[y][x] = generation_config_.mountains_humidity;
-                break;
-            case 5:
-                humidity_map_[y][x] = generation_config_.highlands_humidity;
-                break;
-            default:
-                humidity_map_[y][x] = 0.0;
-                break;
+            const int t = tiled_map_[y][x];
+            if (t == 0 || t == 1)
+                for (int d = 0; d < 4; ++d) buf[d][y][x] = SOURCE;
+        }
+
+    for (int d = 0; d < 4; ++d) {
+        auto& b = buf[d];
+        const bool y_rev = (dy[d] > 0);
+        const bool x_rev = (dx[d] > 0);
+        for (int yo = 0; yo < height; ++yo) {
+            const int y = y_rev ? (height - 1 - yo) : yo;
+            for (int xo = 0; xo < width; ++xo) {
+                const int x = x_rev ? (width - 1 - xo) : xo;
+                const int t = tiled_map_[y][x];
+                if (t == 0 || t == 1) continue;
+                const double k = permeability(t);
+                const int py = y + dy[d];
+                const int px = x + dx[d];
+                double base = 0.0;
+                if (py >= 0 && py < height && px >= 0 && px < width)
+                    base = b[py][px];
+                b[y][x] = base * k;
             }
         }
     }
+
+    // Суммируем 4 буфера. На песке — гладкий max (p-норма), а не жёсткий.
+    humidity_map_.assign(height, vector<double>(width, 0.0));
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            if (tiled_map_[y][x] == 2) {
+                constexpr double P = 16.0;           // 8..32; больше = ближе к max
+                double s = 0.0;
+                for (int d = 0; d < 4; ++d) {
+                    const double v = buf[d][y][x];
+                    if (v > 0.0) s += std::pow(v, P);
+                }
+                const double m = (s > 0.0) ? std::pow(s, 1.0 / P) : 0.0;
+                humidity_map_[y][x] = m * 4.0;
+            }
+            else {
+                double s = 0.0;
+                for (int d = 0; d < 4; ++d) s += buf[d][y][x];
+                humidity_map_[y][x] = s;
+            }
+        }
+    }
+
+    vector<vector<double>> value_noise = generate_value_noise(height, width, octaves, scale, generation_config_.persistence);
+
+    for (auto& row : humidity_map_)
+        for (double& v : row) v /= 4.0;
 }
+
 void World::create_initial_items(const vector<InitialItem>& items) {
     for (const auto& [type, count] : items) {
         switch (type) {

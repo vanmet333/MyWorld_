@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -65,14 +66,93 @@ namespace {
         float camera_y = 0.0f;
         vector<uint32_t> frame_pixels;
         bool show_continents = false;
+        bool show_humidity = false;
+        bool show_heat = false;
     };
 
     struct TileTexture {
         UINT width = 0;
         UINT height = 0;
-        vector<uint32_t> pixels;
+        vector<uint32_t> pixels;   // premultiplied RGB
         vector<unsigned char> alpha;
     };
+
+    // Стандартное source-over смешивание для одного канала:
+    //   out = src * a + dst * (1 - a)
+    // в целочисленной форме с округлением.
+    constexpr uint32_t blend_channel(uint32_t src, uint32_t dst, uint32_t alpha) {
+        return (src * alpha + dst * (255u - alpha) + 127u) / 255u;
+    }
+
+    // === Быстрая загрузка текстуры через LockBits ===
+    // Раньше на каждый пиксель вызывался Bitmap::GetPixel (~80 нс / вызов).
+    // С LockBits читаем сырой буфер напрямую (единицы нс / пиксель) — на порядки быстрее.
+    TileTexture load_texture(const filesystem::path& path) {
+        TileTexture texture;
+
+        auto bitmap = make_unique<Bitmap>(path.c_str());
+        if (bitmap->GetLastStatus() != Ok)
+            return texture;
+
+        texture.width = bitmap->GetWidth();
+        texture.height = bitmap->GetHeight();
+        if (texture.width == 0 || texture.height == 0)
+            return texture;
+
+        const size_t pixel_count = static_cast<size_t>(texture.width) * texture.height;
+        texture.pixels.resize(pixel_count);
+        texture.alpha.resize(pixel_count);
+
+        BitmapData data{};
+        const Rect rect(0, 0, static_cast<INT>(texture.width), static_cast<INT>(texture.height));
+        if (bitmap->LockBits(&rect, ImageLockModeRead, PixelFormat32bppARGB, &data) != Ok)
+            return texture;
+
+        const LONG stride = data.Stride;
+        const bool bottom_up = stride < 0;
+        const BYTE* const base = static_cast<const BYTE*>(data.Scan0);
+
+        for (UINT y = 0; y < texture.height; ++y) {
+            const auto* row = reinterpret_cast<const DWORD*>(
+                base + static_cast<ptrdiff_t>(y) * stride
+                );
+            const UINT store_y = bottom_up ? (texture.height - 1 - y) : y;
+            const size_t row_offset = static_cast<size_t>(store_y) * texture.width;
+            for (UINT x = 0; x < texture.width; ++x) {
+                const DWORD argb = row[x];
+                const uint32_t a = (argb >> 24) & 0xFFu;
+                const uint32_t r = (argb >> 16) & 0xFFu;
+                const uint32_t g = (argb >> 8) & 0xFFu;
+                const uint32_t b = argb & 0xFFu;
+                texture.pixels[row_offset + x] =
+                    ((r * a / 255u) << 16) | ((g * a / 255u) << 8) | (b * a / 255u);
+                texture.alpha[row_offset + x] = static_cast<unsigned char>(a);
+            }
+        }
+
+        bitmap->UnlockBits(&data);
+        return texture;
+    }
+
+    // Ищет папку ассетов сначала относительно рабочего каталога,
+    // затем относительно директории исполняемого файла (три уровня вверх).
+    filesystem::path resolve_asset_directory(const wchar_t* relative_path) {
+        filesystem::path directory = filesystem::current_path() / relative_path;
+        error_code error;
+        if (!filesystem::exists(directory, error)) {
+            vector<wchar_t> executable_path(32768);
+            const DWORD length = GetModuleFileNameW(
+                nullptr, executable_path.data(), static_cast<DWORD>(executable_path.size())
+            );
+            if (length > 0 && length < executable_path.size()) {
+                const filesystem::path project_directory = filesystem::path(
+                    wstring(executable_path.data(), length)
+                ).parent_path().parent_path().parent_path();
+                directory = project_directory / relative_path;
+            }
+        }
+        return directory;
+    }
 
     vector<TileTexture>& tile_textures() {
         static vector<TileTexture> textures = [] {
@@ -84,50 +164,11 @@ namespace {
                 L"mountains.png",
                 L"snow.png"
             };
-
-            filesystem::path texture_directory = filesystem::current_path() / L"assets" / L"textures" / L"terrain";
-            error_code error;
-            if (!filesystem::exists(texture_directory, error)) {
-                vector<wchar_t> executable_path(32768);
-                const DWORD length = GetModuleFileNameW(
-                    nullptr, executable_path.data(), static_cast<DWORD>(executable_path.size())
-                );
-                if (length > 0 && length < executable_path.size()) {
-                    filesystem::path project_directory = filesystem::path(
-                        wstring(executable_path.data(), length)
-                    ).parent_path().parent_path().parent_path();
-                    texture_directory = project_directory / L"assets" / L"textures" / L"terrain";
-                }
-            }
-
+            const filesystem::path directory = resolve_asset_directory(L"assets/textures/terrain");
             vector<TileTexture> loaded;
             loaded.reserve(file_names.size());
-            for (const wchar_t* file_name : file_names) {
-                auto bitmap = make_unique<Bitmap>((texture_directory / file_name).c_str());
-                TileTexture texture;
-                if (bitmap->GetLastStatus() == Ok) {
-                    texture.width = bitmap->GetWidth();
-                    texture.height = bitmap->GetHeight();
-                    texture.pixels.resize(static_cast<size_t>(texture.width) * texture.height);
-                    texture.alpha.resize(static_cast<size_t>(texture.width) * texture.height);
-                    for (UINT y = 0; y < texture.height; ++y) {
-                        for (UINT x = 0; x < texture.width; ++x) {
-                            Color color;
-                            if (bitmap->GetPixel(x, y, &color) == Ok) {
-                                const uint32_t alpha = color.GetA();
-                                const uint32_t red = color.GetR() * alpha / 255;
-                                const uint32_t green = color.GetG() * alpha / 255;
-                                const uint32_t blue = color.GetB() * alpha / 255;
-                                texture.pixels[static_cast<size_t>(y) * texture.width + x] =
-                                    (red << 16) | (green << 8) | blue;
-                                texture.alpha[static_cast<size_t>(y) * texture.width + x] =
-                                    static_cast<unsigned char>(alpha);
-                            }
-                        }
-                    }
-                }
-                loaded.push_back(move(texture));
-            }
+            for (const wchar_t* file_name : file_names)
+                loaded.push_back(load_texture(directory / file_name));
             return loaded;
             }();
         return textures;
@@ -136,83 +177,29 @@ namespace {
     vector<TileTexture>& tree_textures() {
         static vector<TileTexture> textures = [] {
             vector<TileTexture> loaded;
-            filesystem::path directory = filesystem::current_path() / L"assets" / L"textures" / L"tree" / L"plains";
-            error_code error;
-            if (!filesystem::exists(directory, error)) {
-                vector<wchar_t> executable_path(32768);
-                const DWORD length = GetModuleFileNameW(nullptr, executable_path.data(), static_cast<DWORD>(executable_path.size()));
-                if (length > 0 && length < executable_path.size()) {
-                    filesystem::path project_directory = filesystem::path(wstring(executable_path.data(), length)).parent_path().parent_path().parent_path();
-                    directory = project_directory / L"assets" / L"textures" / L"tree" / L"plains";
-                }
-            }
+            const filesystem::path directory =
+                resolve_asset_directory(L"assets/textures/tree/plains");
             for (int variant = 1; variant <= 3; ++variant) {
-                const filesystem::path file = directory / (L"plains_tree_ver" + to_wstring(variant) + L".png");
-                auto bitmap = make_unique<Bitmap>(file.c_str());
-                TileTexture texture;
-                if (bitmap->GetLastStatus() == Ok) {
-                    texture.width = bitmap->GetWidth();
-                    texture.height = bitmap->GetHeight();
-                    texture.pixels.resize(static_cast<size_t>(texture.width) * texture.height);
-                    texture.alpha.resize(static_cast<size_t>(texture.width) * texture.height);
-                    for (UINT y = 0; y < texture.height; ++y) for (UINT x = 0; x < texture.width; ++x) {
-                        Color color;
-                        if (bitmap->GetPixel(x, y, &color) == Ok) {
-                            const uint32_t alpha = color.GetA();
-                            texture.pixels[static_cast<size_t>(y) * texture.width + x] =
-                                ((color.GetR() * alpha / 255) << 16) | ((color.GetG() * alpha / 255) << 8) | (color.GetB() * alpha / 255);
-                            texture.alpha[static_cast<size_t>(y) * texture.width + x] = static_cast<unsigned char>(alpha);
-                        }
-                    }
-                }
-                loaded.push_back(move(texture));
+                loaded.push_back(load_texture(
+                    directory / (L"plains_tree_ver" + to_wstring(variant) + L".png")
+                ));
             }
             return loaded;
             }();
         return textures;
     }
 
-    // Функция вынесена из tree_textures()
     vector<TileTexture>& mineral_textures() {
         static vector<TileTexture> textures = [] {
             vector<TileTexture> loaded;
-            filesystem::path directory = filesystem::current_path() / L"assets" / L"textures" / L"minerals";
-            error_code error;
-            if (!filesystem::exists(directory, error)) {
-                vector<wchar_t> executable_path(32768);
-                const DWORD length = GetModuleFileNameW(nullptr, executable_path.data(), static_cast<DWORD>(executable_path.size()));
-                if (length > 0 && length < executable_path.size()) {
-                    filesystem::path project_directory = filesystem::path(wstring(executable_path.data(), length)).parent_path().parent_path().parent_path();
-                    directory = project_directory / L"assets" / L"textures" / L"minerals";
-                }
-            }
-
+            const filesystem::path directory =
+                resolve_asset_directory(L"assets/textures/minerals");
             // Порядок должен соответствовать MineralVariant (Rock, Copper, Iron, Gold, Platinum)
             const array<const wchar_t*, 5> file_names = {
                 L"rock.png", L"copper.png", L"iron.png", L"gold.png", L"platinum.png"
             };
-
-            for (const auto* file_name : file_names) {
-                const filesystem::path file = directory / file_name;
-                auto bitmap = make_unique<Bitmap>(file.c_str());
-                TileTexture texture;
-                if (bitmap->GetLastStatus() == Ok) {
-                    texture.width = bitmap->GetWidth();
-                    texture.height = bitmap->GetHeight();
-                    texture.pixels.resize(static_cast<size_t>(texture.width) * texture.height);
-                    texture.alpha.resize(static_cast<size_t>(texture.width) * texture.height);
-                    for (UINT y = 0; y < texture.height; ++y) for (UINT x = 0; x < texture.width; ++x) {
-                        Color color;
-                        if (bitmap->GetPixel(x, y, &color) == Ok) {
-                            const uint32_t alpha = color.GetA();
-                            texture.pixels[static_cast<size_t>(y) * texture.width + x] =
-                                ((color.GetR() * alpha / 255) << 16) | ((color.GetG() * alpha / 255) << 8) | (color.GetB() * alpha / 255);
-                            texture.alpha[static_cast<size_t>(y) * texture.width + x] = static_cast<unsigned char>(alpha);
-                        }
-                    }
-                }
-                loaded.push_back(move(texture));
-            }
+            for (const auto* file_name : file_names)
+                loaded.push_back(load_texture(directory / file_name));
             return loaded;
             }();
         return textures;
@@ -276,6 +263,27 @@ namespace {
         InvalidateRect(window, nullptr, FALSE);
     }
 
+    // Быстрое вычисление коэффициента зума для колеса мыши.
+    // Для типичных целочисленных шагов (delta кратно WHEEL_DELTA) обходимся
+    // умножением, без вызова pow() в горячем обработчике сообщений.
+    float wheel_zoom_factor(WPARAM w_param) {
+        constexpr float zoom_step = 1.2f;
+        const int delta = GET_WHEEL_DELTA_WPARAM(w_param);
+        const int whole_steps = delta / WHEEL_DELTA;
+
+        if (whole_steps == 0) {
+            // Дробный/субшаговый delta (редкость) — только здесь используем pow().
+            const float wheel_steps = static_cast<float>(delta) / static_cast<float>(WHEEL_DELTA);
+            return pow(zoom_step, wheel_steps);
+        }
+
+        float factor = 1.0f;
+        const int abs_steps = whole_steps < 0 ? -whole_steps : whole_steps;
+        for (int i = 0; i < abs_steps; ++i)
+            factor *= zoom_step;
+        return whole_steps > 0 ? factor : 1.0f / factor;
+    }
+
     LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM w_param, LPARAM l_param) {
         auto* context = reinterpret_cast<WindowContext*>(
             GetWindowLongPtrW(window, GWLP_USERDATA)
@@ -299,7 +307,9 @@ namespace {
                     context->camera_x,
                     context->camera_y,
                     context->frame_pixels,
-                    context->show_continents
+                    context->show_continents,
+                    context->show_humidity,
+                    context->show_heat
                 );
 
                 BITMAPINFO bitmap_info{};
@@ -328,9 +338,7 @@ namespace {
         case WM_MOUSEWHEEL: {
             if (!context)
                 return DefWindowProcW(window, message, w_param, l_param);
-            const float wheel_steps = static_cast<float>(GET_WHEEL_DELTA_WPARAM(w_param)) /
-                static_cast<float>(WHEEL_DELTA);
-            zoom_at_cursor(window, *context, pow(1.2f, wheel_steps), l_param);
+            zoom_at_cursor(window, *context, wheel_zoom_factor(w_param), l_param);
             return 0;
         }
         case WM_KEYDOWN: {
@@ -339,7 +347,6 @@ namespace {
             constexpr float pan_step = 48.0f;
             switch (w_param) {
             case 'C':
-                // Игнорируем автоповтор клавиши, чтобы удержание C не переключало режим многократно.
                 if ((l_param & (1LL << 30)) == 0) {
                     context->show_continents = !context->show_continents;
                     InvalidateRect(window, nullptr, FALSE);
@@ -349,6 +356,19 @@ namespace {
             case 'S': context->camera_y += pan_step; break;
             case 'A': context->camera_x -= pan_step; break;
             case 'D': context->camera_x += pan_step; break;
+            case 'H':
+                if ((l_param & (1LL << 30)) == 0) {
+                    context->show_humidity = !context->show_humidity;
+                    InvalidateRect(window, nullptr, FALSE);
+                }
+                return 0;
+            case 'T':
+                if ((l_param & (1LL << 30)) == 0) {
+                    context->show_heat = !context->show_heat;
+                    InvalidateRect(window, nullptr, FALSE);
+                }
+                return 0;
+
             default: return DefWindowProcW(window, message, w_param, l_param);
             }
             clamp_camera(*context);
@@ -471,8 +491,11 @@ void Render::draw_map_tiles(
     float camera_x,
     float camera_y,
     vector<uint32_t>& frame_pixels,
-    bool show_continents
-) const {
+    bool show_continents,
+    bool show_humidity,
+    bool show_heat
+)
+const {
     const auto& tile_map = world.get_tiled_map();
     const auto& continent_map = world.get_continent_map();
     const auto& continent_colors = world.get_continent_colors();
@@ -499,12 +522,75 @@ void Render::draw_map_tiles(
         frame_pixels.resize(static_cast<size_t>(target_map_size) * target_map_size);
     fill(frame_pixels.begin(), frame_pixels.end(), 0u);
 
+    // === Подготовка карты влажности ===
+    // ВАЖНО: все ссылки на карты получены ДО запуска потоков ниже.
+    // Потоки только читают эти const-объекты, поэтому гонок данных нет.
+    const auto& humidity_map = world.get_humidity_map();
+    const bool has_humidity =
+        show_humidity &&
+        !humidity_map.empty() &&
+        humidity_map.size() == tile_map.size() &&
+        !humidity_map.front().empty() &&
+        humidity_map.front().size() == map_width &&
+        !continent_map.empty() &&
+        continent_map.size() == humidity_map.size();
+
+    // === Подготовка тепловой карты ===
+    const auto& heat_map = world.get_heat_map();
+    const bool has_heat =
+        show_heat &&
+        !heat_map.empty() &&
+        heat_map.size() == tile_map.size() &&
+        !heat_map.front().empty() &&
+        heat_map.front().size() == map_width &&
+        !continent_map.empty() &&
+        continent_map.size() == heat_map.size();
+
+    // Перцентильные границы (2% / 98%) — устойчивость к выбросам.
+    // humidity_range == 0.0 означает "диапазон не определён" (нет данных
+    // или все значения одинаковые) — в цикле рендера будет использован
+    // голубой fallback, а не красный.
+    double humidity_min = 0.0;
+    double humidity_range = 0.0;
+    if (has_humidity) {
+        vector<double> samples;
+        samples.reserve(static_cast<size_t>(map_width) * tile_map.size());
+        for (size_t y = 0; y < continent_map.size() && y < humidity_map.size(); ++y) {
+            const size_t limit = min(continent_map[y].size(), humidity_map[y].size());
+            for (size_t x = 0; x < limit; ++x) {
+                if (continent_map[y][x] < 0) continue;      // только континенты
+                const double h = humidity_map[y][x];
+                if (!isfinite(h)) continue;                 // защита от NaN/Inf
+                samples.push_back(h);
+            }
+        }
+        if (!samples.empty()) {
+            const size_t lo_idx = samples.size() * 2 / 100;
+            const size_t hi_idx = samples.size() * 98 / 100;
+            if (hi_idx > lo_idx && hi_idx < samples.size()) {
+                nth_element(samples.begin(), samples.begin() + lo_idx, samples.end());
+                const double p_lo = samples[lo_idx];
+                nth_element(samples.begin(), samples.begin() + hi_idx, samples.end());
+                const double p_hi = samples[hi_idx];
+                if (p_hi > p_lo) {
+                    humidity_min = p_lo;
+                    humidity_range = p_hi - p_lo;
+                }
+            }
+        }
+    }
+
+    // heat_map уже хранит нормализованные значения в диапазоне 0..1.
+
     const unsigned int reported_threads = thread::hardware_concurrency();
     const size_t thread_count = min(
         static_cast<size_t>(reported_threads == 0 ? 1 : reported_threads),
         static_cast<size_t>(target_map_size)
     );
 
+    // Лямбда захватывает всё по ссылке, но все внешние объекты — константные,
+    // и мы к ним обращаемся только на чтение. Каждый поток пишет только
+    // в свой диапазон строк frame_pixels, поэтому записи не пересекаются.
     const auto render_rows = [&](int first_row, int end_row) {
         for (int screen_y = first_row; screen_y < end_row; ++screen_y) {
             const double map_y = (screen_y + 0.5 + camera_y) / tile_size;
@@ -543,7 +629,7 @@ void Render::draw_map_tiles(
                     double texture_x = map_x - tile_x;
                     double texture_y = local_y;
 
-                    // Undo the tile's clockwise rotation, then its horizontal mirror.
+                    // Отменяем поворот плитки по часовой стрелке, затем — зеркально
                     for (int rotation = 0; rotation < transform % 4; ++rotation) {
                         const double previous_x = texture_x;
                         texture_x = texture_y;
@@ -564,25 +650,123 @@ void Render::draw_map_tiles(
                     output_row[screen_x] = texture.pixels[source_y * texture.width + source_x];
                 }
 
-                // Континенты накладываются поверх поверхности с непрозрачностью 70%
-                // (то есть 30% прозрачности). Вода с ID континента -1 не окрашивается.
+                // Континенты: 70% непрозрачности, вода (id = -1) не окрашивается.
                 if (show_continents &&
                     static_cast<size_t>(tile_y) < continent_map.size() &&
                     static_cast<size_t>(tile_x) < continent_map[static_cast<size_t>(tile_y)].size()) {
-                    const int continent_id = continent_map[static_cast<size_t>(tile_y)][static_cast<size_t>(tile_x)];
+                    const int continent_id =
+                        continent_map[static_cast<size_t>(tile_y)][static_cast<size_t>(tile_x)];
                     if (continent_id >= 0 && static_cast<size_t>(continent_id) < continent_colors.size()) {
-                        constexpr uint32_t overlay_alpha = 179; // 70% непрозрачности
-                        constexpr uint32_t inverse_alpha = 255 - overlay_alpha;
-                        const uint32_t continent_color = continent_colors[static_cast<size_t>(continent_id)];
+                        constexpr uint32_t overlay_alpha = 179; // ~70% непрозрачности
+                        const uint32_t cc = continent_colors[static_cast<size_t>(continent_id)];
                         const uint32_t base_color = output_row[screen_x];
 
-                        const uint32_t red = ((((continent_color >> 16) & 0xffu) * overlay_alpha) +
-                            (((base_color >> 16) & 0xffu) * inverse_alpha) + 127u) / 255u;
-                        const uint32_t green = ((((continent_color >> 8) & 0xffu) * overlay_alpha) +
-                            (((base_color >> 8) & 0xffu) * inverse_alpha) + 127u) / 255u;
-                        const uint32_t blue = (((continent_color & 0xffu) * overlay_alpha) +
-                            ((base_color & 0xffu) * inverse_alpha) + 127u) / 255u;
+                        const uint32_t red = blend_channel((cc >> 16) & 0xFFu, (base_color >> 16) & 0xFFu, overlay_alpha);
+                        const uint32_t green = blend_channel((cc >> 8) & 0xFFu, (base_color >> 8) & 0xFFu, overlay_alpha);
+                        const uint32_t blue = blend_channel(cc & 0xFFu, base_color & 0xFFu, overlay_alpha);
 
+                        output_row[screen_x] = (red << 16) | (green << 8) | blue;
+                    }
+                }
+
+                // Влажность: 65% непрозрачности, только на континентах.
+                if (has_humidity &&
+                    static_cast<size_t>(tile_y) < continent_map.size() &&
+                    static_cast<size_t>(tile_x) < continent_map[static_cast<size_t>(tile_y)].size()) {
+                    const int continent_id =
+                        continent_map[static_cast<size_t>(tile_y)][static_cast<size_t>(tile_x)];
+                    if (continent_id >= 0 &&
+                        static_cast<size_t>(tile_y) < humidity_map.size() &&
+                        static_cast<size_t>(tile_x) < humidity_map[static_cast<size_t>(tile_y)].size()) {
+
+                        const double h =
+                            humidity_map[static_cast<size_t>(tile_y)][static_cast<size_t>(tile_x)];
+
+                        double t;
+                        if (humidity_range > 1e-6) {
+                            t = (h - humidity_min) / humidity_range;
+                            if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+                            // Очень агрессивная гамма pow(t, 0.25): тянет почти все
+                            // значения к синей части шкалы. Только самая-самая сушь
+                            // (нижние ~0.01% диапазона) остаётся красной.
+                            t = sqrt(sqrt(t));
+                        }
+                        else {
+                            // Вырожденный случай: диапазон не определён (все
+                            // значения равны). Красим в средний синий, чтобы
+                            // карта не выглядела «всё красное».
+                            t = 0.6;
+                        }
+
+                        // Расходящаяся палитра: красный (сухо) → белый → синий (влажно).
+                        // mid = 0.15: белый наступает уже на 15% шкалы, 85% тайлов
+                        // получаются синими.
+                        constexpr double mid = 0.45;
+
+                        uint32_t hum_r, hum_g, hum_b;
+                        if (t <= mid) {
+                            const double   u = t / mid;                             // 0..1
+                            const uint32_t gb = static_cast<uint32_t>(u * 255.0 + 0.5);
+                            hum_r = 255;
+                            hum_g = gb;
+                            hum_b = gb;
+                        }
+                        else {
+                            const double   u = (1.0 - t) / (1.0 - mid);             // 1..0
+                            const uint32_t rb = static_cast<uint32_t>(u * 255.0 + 0.5);
+                            hum_r = rb;
+                            hum_g = rb;
+                            hum_b = 255;
+                        }
+
+                        constexpr uint32_t overlay_alpha = 166; // ~65% непрозрачности
+                        const uint32_t base_color = output_row[screen_x];
+
+                        const uint32_t red = blend_channel(hum_r, (base_color >> 16) & 0xFFu, overlay_alpha);
+                        const uint32_t green = blend_channel(hum_g, (base_color >> 8) & 0xFFu, overlay_alpha);
+                        const uint32_t blue = blend_channel(hum_b, base_color & 0xFFu, overlay_alpha);
+
+                        output_row[screen_x] = (red << 16) | (green << 8) | blue;
+                    }
+                }
+
+                // Тепловая карта: холодный синий -> белый -> горячий красный.
+                // Рисуется только на суше, с той же прозрачностью, что и влажность.
+                if (has_heat &&
+                    static_cast<size_t>(tile_y) < continent_map.size() &&
+                    static_cast<size_t>(tile_x) < continent_map[static_cast<size_t>(tile_y)].size() &&
+                    continent_map[static_cast<size_t>(tile_y)][static_cast<size_t>(tile_x)] >= 0 &&
+                    static_cast<size_t>(tile_y) < heat_map.size() &&
+                    static_cast<size_t>(tile_x) < heat_map[static_cast<size_t>(tile_y)].size()) {
+
+                    const double value =
+                        heat_map[static_cast<size_t>(tile_y)][static_cast<size_t>(tile_x)];
+
+                    if (isfinite(value)) {
+                        // Значения heat_map уже находятся в диапазоне 0..1.
+                        const double t = clamp(value, 0.0, 1.0);
+
+                        uint32_t heat_r, heat_g, heat_b;
+                        if (t <= 0.5) {
+                            // Синий -> белый.
+                            const uint32_t u = static_cast<uint32_t>(t * 2.0 * 255.0 + 0.5);
+                            heat_r = u;
+                            heat_g = u;
+                            heat_b = 255;
+                        }
+                        else {
+                            // Белый -> красный.
+                            const uint32_t u = static_cast<uint32_t>((1.0 - (t - 0.5) * 2.0) * 255.0 + 0.5);
+                            heat_r = 255;
+                            heat_g = u;
+                            heat_b = u;
+                        }
+
+                        constexpr uint32_t heat_overlay_alpha = 166; // ~65% непрозрачности
+                        const uint32_t base_color = output_row[screen_x];
+                        const uint32_t red = blend_channel(heat_r, (base_color >> 16) & 0xFFu, heat_overlay_alpha);
+                        const uint32_t green = blend_channel(heat_g, (base_color >> 8) & 0xFFu, heat_overlay_alpha);
+                        const uint32_t blue = blend_channel(heat_b, base_color & 0xFFu, heat_overlay_alpha);
                         output_row[screen_x] = (red << 16) | (green << 8) | blue;
                     }
                 }
@@ -643,7 +827,7 @@ void Render::draw_map_tiles(
         }
     }
 
-    // Сначала рисуем дальние объекты; основание ниже на карте означает ближний слой.
+    // Сначала рисуем дальние объекты; основание ниже на карте — ближний слой.
     stable_sort(visible_objects.begin(), visible_objects.end(), [&](size_t left, size_t right) {
         const WorldObject& a = objects[left];
         const WorldObject& b = objects[right];
@@ -657,7 +841,6 @@ void Render::draw_map_tiles(
     for (size_t object_index : visible_objects) {
         const WorldObject& object = objects[object_index];
 
-        // Правильный выбор текстуры в зависимости от типа объекта
         const TileTexture* object_texture = nullptr;
         if (object.type == WorldObjectType::Tree) {
             if (object.variant >= 0 && static_cast<size_t>(object.variant) < available_tree_textures.size() &&
@@ -688,7 +871,6 @@ void Render::draw_map_tiles(
 
         const bool apply_small_object_effect = use_flat_colors && object.width < 5 && object.height < 5;
 
-        // Цвет заглушка для минералов (серый) и деревьев (зеленый)
         const uint32_t fallback_color = (object.type == WorldObjectType::Mineral)
             ? ((128u << 16) | (128u << 8) | 128u)
             : ((20u << 16) | (105u << 8) | 35u);

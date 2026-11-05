@@ -41,7 +41,7 @@ struct WorldGenerationConfig {
     double platinum_chance;
     //Humidity
     double sand_humidity;
-    double earth_humidity;
+    double plains_humidity;
     double mountains_humidity;
     double highlands_humidity;
 
@@ -122,7 +122,7 @@ public:
     void create_initial_items(const vector<InitialItem>& items);
     void update_chunks(double delta_time);
     void generate_continent_map(); 
-    void generate_humidity_map();
+    void generate_humidity_map(int height, int width, int octaves, int scale);
 
     const vector<vector<int>>& get_continent_map() const;
     const vector<uint32_t>& get_continent_colors() const;
