@@ -11,6 +11,7 @@
 #include <ppl.h>
 #include <queue>
 #include <cstdint>
+#include <iostream> 
 
 using namespace std;
 
@@ -280,9 +281,11 @@ void World::generate_continent_map()
          1,  1,  1
     };
 
+    queue<pair<int, int>> frontier;
+
     int continent_id = 0;
 
-    queue<pair<int, int>> frontier;
+    // === Поиск континентов ===
 
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
@@ -290,7 +293,8 @@ void World::generate_continent_map()
             if (continent_map_[y][x] != -1)
                 continue;
 
-            if (height_map_[y][x] <= generation_config_.shallow_water_boundary)
+            if (height_map_[y][x] <=
+                generation_config_.shallow_water_boundary)
                 continue;
 
             frontier.push({ x, y });
@@ -327,6 +331,87 @@ void World::generate_continent_map()
         }
     }
 
+    // === Поиск озёр ===
+    // -1 — океан и другая вода, соединённая с краем карты.
+    // -2, -3, -4... — отдельные озёра.
+
+    vector<vector<unsigned char>> water_visited(
+        height,
+        vector<unsigned char>(width, 0)
+    );
+
+    int lake_id = -2;
+    int lake_count = 0;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+
+            if (water_visited[y][x])
+                continue;
+
+            if (height_map_[y][x] >
+                generation_config_.shallow_water_boundary)
+                continue;
+
+            queue<pair<int, int>> water_frontier;
+            vector<pair<int, int>> lake_cells;
+
+            water_frontier.push({ x, y });
+            water_visited[y][x] = 1;
+
+            bool touches_border = false;
+
+            while (!water_frontier.empty()) {
+
+                const auto [current_x, current_y] = water_frontier.front();
+                water_frontier.pop();
+
+                lake_cells.push_back({ current_x, current_y });
+
+                if (current_x == 0 || current_x == width - 1 ||
+                    current_y == 0 || current_y == height - 1) {
+                    touches_border = true;
+                }
+
+                for (int i = 0; i < 8; ++i) {
+
+                    const int next_x = current_x + dx[i];
+                    const int next_y = current_y + dy[i];
+
+                    if (next_x < 0 || next_x >= width ||
+                        next_y < 0 || next_y >= height)
+                        continue;
+
+                    if (water_visited[next_y][next_x])
+                        continue;
+
+                    if (height_map_[next_y][next_x] >
+                        generation_config_.shallow_water_boundary)
+                        continue;
+
+                    water_visited[next_y][next_x] = 1;
+
+                    water_frontier.push({ next_x, next_y });
+                }
+            }
+
+            // Вода касается края карты — оставляем ID -1.
+            // Если не касается — назначаем отдельный ID озера.
+            if (!touches_border) {
+
+                for (const auto& [lake_x, lake_y] : lake_cells) {
+                    continent_map_[lake_y][lake_x] = lake_id;
+                }
+
+                --lake_id;
+                ++lake_count;
+            }
+        }
+    }
+
+    // === Генерация цветов континентов ===
+    // Озёра сюда не попадают.
+
     mt19937 color_engine{ random_device{}() };
 
     uniform_int_distribution<int> color_distribution(80, 230);
@@ -350,195 +435,12 @@ void World::generate_continent_map()
 }
 
 
-void World::generate_humidity_map(int height, int width, int octaves, int scale)
-{
-    if (tiled_map_.empty() || tiled_map_.front().empty()) {
-        humidity_map_.clear();
-        return;
-    }
-
-    auto permeability = [&](int tile) -> double {
-        double c = 1.0;
-
-        switch (tile) {
-        case 2: c = generation_config_.sand_humidity;      break;
-        case 3: c = generation_config_.plains_humidity;    break;
-        case 4: c = generation_config_.mountains_humidity; break;
-        case 5: c = generation_config_.highlands_humidity; break;
-        default: c = 1.0; break;
-        }
-
-        if (!(c >= 0.0)) c = 0.0;
-        if (c > 0.999) c = 0.999;
-
-        return c;
-        };
-
-    constexpr double SOURCE = 1.0;
-    constexpr double DIAGONAL_DISTANCE = 1.4142135623730951;
-
-    // Четыре прямых направления ветра.
-    const int cardinal_dx[4] = { -1, +1,  0,  0 };
-    const int cardinal_dy[4] = { 0,  0, -1, +1 };
-
-    // Четыре диагональных направления ветра.
-    const int diagonal_dx[4] = { -1, +1, -1, +1 };
-    const int diagonal_dy[4] = { -1, -1, +1, +1 };
-
-    // Каждый ветер имеет собственный буфер.
-    vector<vector<double>> cardinal_buf[4];
-    vector<vector<double>> diagonal_buf[4];
-
-    for (int d = 0; d < 4; ++d) {
-        cardinal_buf[d].assign(
-            height, vector<double>(width, 0.0)
-        );
-
-        diagonal_buf[d].assign(
-            height, vector<double>(width, 0.0)
-        );
-    }
-
-    // Океан является источником влаги для каждого направления.
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            const int t = tiled_map_[y][x];
-
-            if (t == 0 || t == 1) {
-                for (int d = 0; d < 4; ++d) {
-                    cardinal_buf[d][y][x] = SOURCE;
-                    diagonal_buf[d][y][x] = SOURCE;
-                }
-            }
-        }
-    }
-
-    // Универсальное распространение одного ветра.
-    // Порядок обхода гарантирует, что предыдущий тайл
-    // по направлению ветра уже обработан.
-    const auto propagate_wind = [&](vector<vector<double>>& buffer,
-        int dx, int dy, double distance)
-        {
-            const bool y_rev = (dy > 0);
-            const bool x_rev = (dx > 0);
-
-            for (int yo = 0; yo < height; ++yo) {
-                const int y = y_rev ? (height - 1 - yo) : yo;
-
-                for (int xo = 0; xo < width; ++xo) {
-                    const int x = x_rev ? (width - 1 - xo) : xo;
-
-                    const int t = tiled_map_[y][x];
-
-                    // Вода сохраняет источник.
-                    if (t == 0 || t == 1)
-                        continue;
-
-                    const int py = y + dy;
-                    const int px = x + dx;
-
-                    double base = 0.0;
-
-                    if (py >= 0 && py < height &&
-                        px >= 0 && px < width) {
-                        base = buffer[py][px];
-                    }
-
-                    // Затухание влаги при прохождении тайла.
-                    // Для диагоналей учитывается увеличенный путь.
-                    const double k = pow(permeability(t), distance);
-
-                    buffer[y][x] = base * k;
-                }
-            }
-        };
-
-    // === Четыре прямых ветра ===
-    for (int d = 0; d < 4; ++d) {
-        propagate_wind(
-            cardinal_buf[d],
-            cardinal_dx[d],
-            cardinal_dy[d],
-            1.0
-        );
-    }
-
-    // === Четыре диагональных ветра ===
-    for (int d = 0; d < 4; ++d) {
-        propagate_wind(
-            diagonal_buf[d],
-            diagonal_dx[d],
-            diagonal_dy[d],
-            DIAGONAL_DISTANCE
-        );
-    }
-
-    // === Объединение всех восьми направлений ===
-
-    constexpr int WIND_COUNT = 8;
-    constexpr double P = 16.0;
-
-    humidity_map_.assign(
-        height, vector<double>(width, 0.0)
+void World::generate_humidity_map(int height, int width, int octaves, int scale){
+    humidity_map_ = generate_value_noise(
+        height, width, octaves,
+        scale,
+        generation_config_.persistence - 0.1
     );
-
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-
-            if (tiled_map_[y][x] == 2) {
-
-                // На пляжах используем гладкий максимум
-                // из всех восьми направлений.
-                double s = 0.0;
-
-                for (int d = 0; d < 4; ++d) {
-                    const double cardinal = cardinal_buf[d][y][x];
-                    const double diagonal = diagonal_buf[d][y][x];
-
-                    if (cardinal > 0.0)
-                        s += pow(cardinal, P);
-
-                    if (diagonal > 0.0)
-                        s += pow(diagonal, P);
-                }
-
-                const double m = (s > 0.0)
-                    ? pow(s, 1.0 / P)
-                    : 0.0;
-
-                humidity_map_[y][x] = m * WIND_COUNT;
-            }
-            else {
-
-                // На остальных тайлах суммируем
-                // вклад всех восьми ветров.
-                double s = 0.0;
-
-                for (int d = 0; d < 4; ++d) {
-                    s += cardinal_buf[d][y][x];
-                    s += diagonal_buf[d][y][x];
-                }
-
-                humidity_map_[y][x] = s;
-            }
-        }
-    }
-
-    // Нормализация по восьми направлениям.
-    for (auto& row : humidity_map_) {
-        for (double& v : row)
-            v /= WIND_COUNT;
-    }
-
-    // Шум оставлен для дальнейшего использования
-    vector<vector<double>> value_noise =
-        generate_value_noise(
-            height,
-            width,
-            octaves,
-            scale,
-            generation_config_.persistence
-        );
 }
 
 void World::generate_biome_map(int height, int width) {

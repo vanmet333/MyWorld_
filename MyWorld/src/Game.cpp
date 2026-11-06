@@ -7,6 +7,9 @@
 #include <string>
 #include <vector>
 
+// Render вызывает этот callback при нажатии R.
+void set_map_regeneration_callback(bool (*callback)(void*), void* user_data);
+
 using namespace std;
 namespace {
     filesystem::path find_world_consts_file() {
@@ -58,11 +61,11 @@ namespace {
                 if (key == "persistence" ||
                     key == "deep_water_boundary" || key == "shallow_water_boundary" ||
                     key == "beach_boundary" || key == "plains_boundary" || key == "mountains_boundary" ||
-                    key == "continent_min_area_fraction" ||
                     key == "rock_chance" || key == "copper_chance" || key == "iron_chance" ||
                     key == "gold_chance" || key == "platinum_chance" || key == "sand_humidity" ||
-                    key == "plains_humidity" ||key == "mountains_humidity" || key == "highlands_humidity" ||
-                    key == "cold_biome_boundary" || key == "hot_biome_boundary" || key == "wet_biome_boundary" || key == "dry_biome_boundary")
+                    key == "plains_humidity" || key == "mountains_humidity" || key == "highlands_humidity" ||
+                    key == "cold_biome_boundary" || key == "hot_biome_boundary" || key == "wet_biome_boundary" || key == "dry_biome_boundary"
+                    )
                 {
                     const double parsed_value = stod(value);
                     if (!isfinite(parsed_value)) continue;
@@ -127,8 +130,11 @@ namespace {
     }
 }
 
+// Полный сброс мира: вместе с картами уничтожаются все объекты и чанки.
 void Game::start()
 {
+    world_ = World{};
+
     const WorldGenerationConfig config = load_world_consts();
     const int map_height = config.map_height;
     const int map_width = config.map_width;
@@ -159,5 +165,22 @@ void Game::start()
 void Game::run()
 {
     Game::start();
+
+    // Не даём исключениям пересекать границу оконной процедуры WinAPI.
+    set_map_regeneration_callback(
+        [](void* user_data) -> bool {
+            try {
+                static_cast<Game*>(user_data)->start();
+                return true;
+            }
+            catch (const exception& error) {
+                cerr << "Map regeneration failed: " << error.what() << '\n';
+                return false;
+            }
+        },
+        this
+    );
+
     render_.draw(world_);
+    set_map_regeneration_callback(nullptr, nullptr);
 }

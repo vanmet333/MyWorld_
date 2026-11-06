@@ -70,6 +70,10 @@ namespace {
         bool show_heat = false;
     };
 
+    using MapRegenerationCallback = bool (*)(void*);
+    MapRegenerationCallback map_regeneration_callback = nullptr;
+    void* map_regeneration_user_data = nullptr;
+
     struct TileTexture {
         UINT width = 0;
         UINT height = 0;
@@ -269,6 +273,42 @@ namespace {
             );
     }
 
+    // После генерации карты обновляем случайные преобразования текстур,
+    // масштаб и положение камеры (старые координаты больше не актуальны).
+    void reset_map_view(WindowContext& context) {
+        const auto& tile_map = context.world->get_tiled_map();
+        context.base_tile_size = base_tile_size_for(tile_map);
+        if (context.base_tile_size <= 0)
+            return;
+
+        const size_t map_width = tile_map.front().size();
+        const size_t map_height = tile_map.size();
+        const double base_map_width = static_cast<double>(map_width) * context.base_tile_size;
+        const double base_map_height = static_cast<double>(map_height) * context.base_tile_size;
+
+        context.minimum_zoom = static_cast<float>(min({
+            1.0,
+            target_map_size / base_map_width,
+            target_map_size / base_map_height
+            }));
+        context.zoom_scale = context.minimum_zoom;
+        context.camera_x = 0.0f;
+        context.camera_y = 0.0f;
+
+        random_device random_device_source;
+        mt19937 random_engine(random_device_source());
+        uniform_int_distribution<int> transform_distribution(0, 7);
+        context.tile_transforms.clear();
+        context.tile_transforms.reserve(map_width * map_height);
+        for (size_t i = 0; i < map_width * map_height; ++i) {
+            context.tile_transforms.push_back(
+                static_cast<unsigned char>(transform_distribution(random_engine))
+            );
+        }
+
+        clamp_camera(context);
+    }
+
     void zoom_at_cursor(HWND window, WindowContext& context, float zoom_factor, LPARAM l_param) {
         POINT cursor{ GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param) };
         ScreenToClient(window, &cursor);
@@ -394,6 +434,15 @@ namespace {
                     InvalidateRect(window, nullptr, FALSE);
                 }
                 return 0;
+            case 'R':
+                // Игнорируем автоповтор удерживаемой клавиши.
+                if ((l_param & (1LL << 30)) == 0 &&
+                    map_regeneration_callback &&
+                    map_regeneration_callback(map_regeneration_user_data)) {
+                    reset_map_view(*context);
+                    InvalidateRect(window, nullptr, FALSE);
+                }
+                return 0;
 
             default: return DefWindowProcW(window, message, w_param, l_param);
             }
@@ -408,6 +457,12 @@ namespace {
             return DefWindowProcW(window, message, w_param, l_param);
         }
     }
+}
+
+// Устанавливается Game перед запуском окна и очищается после его закрытия.
+void set_map_regeneration_callback(bool (*callback)(void*), void* user_data) {
+    map_regeneration_callback = callback;
+    map_regeneration_user_data = user_data;
 }
 
 void Render::set_zoom_scale(float zoom_scale) {
@@ -589,39 +644,9 @@ const {
         !continent_map.empty() &&
         continent_map.size() == heat_map.size();
 
-    // Перцентильные границы (2% / 98%) — устойчивость к выбросам.
-    // humidity_range == 0.0 означает "диапазон не определён" (нет данных
-    // или все значения одинаковые) — в цикле рендера будет использован
-    // голубой fallback, а не красный.
-    double humidity_min = 0.0;
-    double humidity_range = 0.0;
-    if (has_humidity) {
-        vector<double> samples;
-        samples.reserve(static_cast<size_t>(map_width) * tile_map.size());
-        for (size_t y = 0; y < continent_map.size() && y < humidity_map.size(); ++y) {
-            const size_t limit = min(continent_map[y].size(), humidity_map[y].size());
-            for (size_t x = 0; x < limit; ++x) {
-                if (continent_map[y][x] < 0) continue;      // только континенты
-                const double h = humidity_map[y][x];
-                if (!isfinite(h)) continue;                 // защита от NaN/Inf
-                samples.push_back(h);
-            }
-        }
-        if (!samples.empty()) {
-            const size_t lo_idx = samples.size() * 2 / 100;
-            const size_t hi_idx = samples.size() * 98 / 100;
-            if (hi_idx > lo_idx && hi_idx < samples.size()) {
-                nth_element(samples.begin(), samples.begin() + lo_idx, samples.end());
-                const double p_lo = samples[lo_idx];
-                nth_element(samples.begin(), samples.begin() + hi_idx, samples.end());
-                const double p_hi = samples[hi_idx];
-                if (p_hi > p_lo) {
-                    humidity_min = p_lo;
-                    humidity_range = p_hi - p_lo;
-                }
-            }
-        }
-    }
+    // Для влажности используем абсолютную шкалу 0..1, а не перцентили карты.
+    // Благодаря этому один и тот же цвет всегда означает одно и то же значение
+    // влажности независимо от конкретного seed.
 
     // heat_map уже хранит нормализованные значения в диапазоне 0..1.
 
@@ -757,51 +782,66 @@ const {
                         const double h =
                             humidity_map[static_cast<size_t>(tile_y)][static_cast<size_t>(tile_x)];
 
-                        double t;
-                        if (humidity_range > 1e-6) {
-                            t = (h - humidity_min) / humidity_range;
-                            if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
-                            // Очень агрессивная гамма pow(t, 0.25): тянет почти все
-                            // значения к синей части шкалы. Только самая-самая сушь
-                            // (нижние ~0.01% диапазона) остаётся красной.
-                            t = sqrt(sqrt(t));
+                        if (isfinite(h)) {
+                            // Фиксированная шкала влажности:
+                            // 0.0 — сухо (красно-оранжевый),
+                            // 0.3 — граница сухого/умеренного (жёлтый),
+                            // 0.7 — граница умеренного/влажного (зелёный),
+                            // 1.0 — очень влажно (синий).
+                            // Никакой автонормализации и гаммы: цвет соответствует
+                            // реальному значению humidity_map_ и порогам биомов.
+                            const double t = clamp(h, 0.0, 1.0);
+
+                            uint32_t hum_r, hum_g, hum_b;
+                            double u;
+
+                            if (t < 0.3) {
+                                // Красно-оранжевый -> жёлтый.
+                                u = t / 0.3;
+                                hum_r = 255;
+                                hum_g = static_cast<uint32_t>(
+                                    75.0 + (215.0 - 75.0) * u + 0.5
+                                    );
+                                hum_b = static_cast<uint32_t>(
+                                    35.0 + (65.0 - 35.0) * u + 0.5
+                                    );
+                            }
+                            else if (t < 0.7) {
+                                // Жёлтый -> зелёный.
+                                u = (t - 0.3) / 0.4;
+                                hum_r = static_cast<uint32_t>(
+                                    255.0 + (75.0 - 255.0) * u + 0.5
+                                    );
+                                hum_g = static_cast<uint32_t>(
+                                    215.0 + (190.0 - 215.0) * u + 0.5
+                                    );
+                                hum_b = static_cast<uint32_t>(
+                                    65.0 + (115.0 - 65.0) * u + 0.5
+                                    );
+                            }
+                            else {
+                                // Зелёный -> синий.
+                                u = (t - 0.7) / 0.3;
+                                hum_r = static_cast<uint32_t>(
+                                    75.0 + (35.0 - 75.0) * u + 0.5
+                                    );
+                                hum_g = static_cast<uint32_t>(
+                                    190.0 + (105.0 - 190.0) * u + 0.5
+                                    );
+                                hum_b = static_cast<uint32_t>(
+                                    115.0 + (235.0 - 115.0) * u + 0.5
+                                    );
+                            }
+
+                            constexpr uint32_t overlay_alpha = 166; // ~65% непрозрачности
+                            const uint32_t base_color = output_row[screen_x];
+
+                            const uint32_t red = blend_channel(hum_r, (base_color >> 16) & 0xFFu, overlay_alpha);
+                            const uint32_t green = blend_channel(hum_g, (base_color >> 8) & 0xFFu, overlay_alpha);
+                            const uint32_t blue = blend_channel(hum_b, base_color & 0xFFu, overlay_alpha);
+
+                            output_row[screen_x] = (red << 16) | (green << 8) | blue;
                         }
-                        else {
-                            // Вырожденный случай: диапазон не определён (все
-                            // значения равны). Красим в средний синий, чтобы
-                            // карта не выглядела «всё красное».
-                            t = 0.6;
-                        }
-
-                        // Расходящаяся палитра: красный (сухо) → белый → синий (влажно).
-                        // mid = 0.15: белый наступает уже на 15% шкалы, 85% тайлов
-                        // получаются синими.
-                        constexpr double mid = 0.45;
-
-                        uint32_t hum_r, hum_g, hum_b;
-                        if (t <= mid) {
-                            const double   u = t / mid;                             // 0..1
-                            const uint32_t gb = static_cast<uint32_t>(u * 255.0 + 0.5);
-                            hum_r = 255;
-                            hum_g = gb;
-                            hum_b = gb;
-                        }
-                        else {
-                            const double   u = (1.0 - t) / (1.0 - mid);             // 1..0
-                            const uint32_t rb = static_cast<uint32_t>(u * 255.0 + 0.5);
-                            hum_r = rb;
-                            hum_g = rb;
-                            hum_b = 255;
-                        }
-
-                        constexpr uint32_t overlay_alpha = 166; // ~65% непрозрачности
-                        const uint32_t base_color = output_row[screen_x];
-
-                        const uint32_t red = blend_channel(hum_r, (base_color >> 16) & 0xFFu, overlay_alpha);
-                        const uint32_t green = blend_channel(hum_g, (base_color >> 8) & 0xFFu, overlay_alpha);
-                        const uint32_t blue = blend_channel(hum_b, base_color & 0xFFu, overlay_alpha);
-
-                        output_row[screen_x] = (red << 16) | (green << 8) | blue;
                     }
                 }
 

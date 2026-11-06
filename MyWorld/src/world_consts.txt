@@ -45,6 +45,9 @@ placement_attempt_padding=100
 
 # Humidity coefficients by terrain type
 sand_humidity=1.0
-plains_humidity=0.99
-mountains_humidity=0.8
+plains_humidity=0.98
+mountains_humidity=0.7
 highlands_humidity=0.1
+mountains_rain_fade=1.0
+mountains_rain_ammount=10000.0
+mountains_rain_boundry=0.6

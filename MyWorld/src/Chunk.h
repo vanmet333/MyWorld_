@@ -3,6 +3,8 @@
 #include "WorldObjects.h"
 #include <vector>
 
+using namespace std;
+
 class Chunk {
 public:
     static constexpr int size_in_tiles = 32;
@@ -11,10 +13,10 @@ public:
     void remove_object(ObjectId id, bool is_dynamic);
     void update(double delta_time);
 
-    const std::vector<ObjectId>& static_object_ids() const;
-    const std::vector<ObjectId>& dynamic_object_ids() const;
+    const vector<ObjectId>& static_object_ids() const;
+    const vector<ObjectId>& dynamic_object_ids() const;
 
 private:
-    std::vector<ObjectId> static_object_ids_;
-    std::vector<ObjectId> dynamic_object_ids_;
+    vector<ObjectId> static_object_ids_;
+    vector<ObjectId> dynamic_object_ids_;
 };
