@@ -11,6 +11,7 @@
 #include <ppl.h>
 #include <queue>
 #include <cstdint>
+#include <array>
 #include <iostream> 
 
 using namespace std;
@@ -513,6 +514,207 @@ void World::generate_biome_map(int height, int width) {
             }
         }
     }
+
+    // =====================================================
+// УДАЛЕНИЕ МАЛЕНЬКИХ ОБЛАСТЕЙ БИОМОВ
+// =====================================================
+
+    auto merge_small_biome_regions = [&](int min_size) {
+
+        if (min_size <= 1)
+            return;
+
+        struct Component {
+            int biome = -1;
+            int size = 0;
+
+            // Количество общих границ с соседними биомами.
+            array<int, 9> border{};
+
+            // Размер самой большой соседней области каждого биома.
+            array<int, 9> neighbor_size{};
+        };
+
+        const int dx[4] = { 0, 0, -1, 1 };
+        const int dy[4] = { -1, 1, 0, 0 };
+
+        bool changed = true;
+
+        // Повторяем, пока маленькие области ещё можно поглощать.
+        while (changed) {
+
+            changed = false;
+
+            vector<vector<int>> component_id(
+                height, vector<int>(width, -1)
+            );
+
+            vector<Component> components;
+
+            // ---------------------------------------------
+            // 1. Ищем все связные области биомов через BFS
+            // ---------------------------------------------
+
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+
+                    int biome = biome_map_[y][x];
+
+                    // Вода и неразмеченные клетки пропускаются.
+                    if (biome < 0 || biome >= 9)
+                        continue;
+
+                    if (component_id[y][x] != -1)
+                        continue;
+
+                    int cid = static_cast<int>(components.size());
+
+                    components.push_back(Component{});
+                    components[cid].biome = biome;
+
+                    queue<pair<int, int>> q;
+
+                    q.push({ x, y });
+                    component_id[y][x] = cid;
+
+                    while (!q.empty()) {
+
+                        auto [cx, cy] = q.front();
+                        q.pop();
+
+                        components[cid].size++;
+
+                        for (int d = 0; d < 4; ++d) {
+
+                            int nx = cx + dx[d];
+                            int ny = cy + dy[d];
+
+                            if (nx < 0 || ny < 0 ||
+                                nx >= width || ny >= height)
+                                continue;
+
+                            if (component_id[ny][nx] != -1)
+                                continue;
+
+                            if (biome_map_[ny][nx] != biome)
+                                continue;
+
+                            component_id[ny][nx] = cid;
+                            q.push({ nx, ny });
+                        }
+                    }
+                }
+            }
+
+            // ---------------------------------------------
+            // 2. Считаем границы с соседними КРУПНЫМИ областями
+            // ---------------------------------------------
+
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+
+                    int cid = component_id[y][x];
+
+                    if (cid < 0)
+                        continue;
+
+                    for (int d = 0; d < 4; ++d) {
+
+                        int nx = x + dx[d];
+                        int ny = y + dy[d];
+
+                        if (nx < 0 || ny < 0 ||
+                            nx >= width || ny >= height)
+                            continue;
+
+                        int neighbor_id = component_id[ny][nx];
+
+                        if (neighbor_id < 0 || neighbor_id == cid)
+                            continue;
+
+                        const Component& neighbor = components[neighbor_id];
+
+                        // Пока не поглощаем другие маленькие области.
+                        if (neighbor.size < min_size)
+                            continue;
+
+                        int neighbor_biome = neighbor.biome;
+
+                        components[cid].border[neighbor_biome]++;
+
+                        components[cid].neighbor_size[neighbor_biome] =
+                            max(
+                                components[cid].neighbor_size[neighbor_biome],
+                                neighbor.size
+                            );
+                    }
+                }
+            }
+
+            // ---------------------------------------------
+            // 3. Выбираем биом-получатель каждой маленькой области
+            // ---------------------------------------------
+
+            vector<int> target_biome(components.size(), -1);
+
+            for (int cid = 0; cid < static_cast<int>(components.size()); ++cid) {
+
+                const Component& c = components[cid];
+
+                if (c.size >= min_size)
+                    continue;
+
+                int best_biome = -1;
+                int best_border = 0;
+                int best_neighbor_size = 0;
+
+                for (int b = 0; b < 9; ++b) {
+
+                    if (c.border[b] > best_border ||
+                        (c.border[b] == best_border &&
+                            c.border[b] > 0 &&
+                            c.neighbor_size[b] > best_neighbor_size)) {
+
+                        best_border = c.border[b];
+                        best_neighbor_size = c.neighbor_size[b];
+                        best_biome = b;
+                    }
+                }
+
+                target_biome[cid] = best_biome;
+            }
+
+            // ---------------------------------------------
+            // 4. Перекрашиваем маленькие области
+            // ---------------------------------------------
+
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+
+                    int cid = component_id[y][x];
+
+                    if (cid < 0)
+                        continue;
+
+                    int target = target_biome[cid];
+
+                    if (target < 0)
+                        continue;
+
+                    biome_map_[y][x] = target;
+                    changed = true;
+                }
+            }
+        }
+    };
+
+    // Минимальный размер биома — процент от площади карты.
+    const int min_biome_cells = static_cast<int>(ceil(
+        height * static_cast<double>(width) *
+        generation_config_.min_biome_size / 100.0
+    ));
+
+    merge_small_biome_regions(min_biome_cells);
 
     // Диагностика распределения биомов.
     vector<size_t> counts(9, 0);

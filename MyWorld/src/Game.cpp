@@ -62,9 +62,9 @@ namespace {
                     key == "deep_water_boundary" || key == "shallow_water_boundary" ||
                     key == "beach_boundary" || key == "plains_boundary" || key == "mountains_boundary" ||
                     key == "rock_chance" || key == "copper_chance" || key == "iron_chance" ||
-                    key == "gold_chance" || key == "platinum_chance" || key == "sand_humidity" ||
-                    key == "plains_humidity" || key == "mountains_humidity" || key == "highlands_humidity" ||
-                    key == "cold_biome_boundary" || key == "hot_biome_boundary" || key == "wet_biome_boundary" || key == "dry_biome_boundary"
+                    key == "gold_chance" || key == "platinum_chance" || key == "cold_biome_boundary" ||
+                    key == "hot_biome_boundary" || key == "wet_biome_boundary" || key == "dry_biome_boundary" ||
+                    key == "min_biome_size"
                     )
                 {
                     const double parsed_value = stod(value);
@@ -80,14 +80,11 @@ namespace {
                     else if (key == "iron_chance") config.iron_chance = parsed_value;
                     else if (key == "gold_chance") config.gold_chance = parsed_value;
                     else if (key == "platinum_chance") config.platinum_chance = parsed_value;
-                    else if (key == "sand_humidity") config.sand_humidity = parsed_value;
-                    else if (key == "plains_humidity") config.plains_humidity = parsed_value;
-                    else if (key == "mountains_humidity") config.mountains_humidity = parsed_value;
-                    else if (key == "highlands_humidity") config.highlands_humidity = parsed_value;
                     else if (key == "cold_biome_boundary") config.cold_biome_boundary = parsed_value;
                     else if (key == "hot_biome_boundary") config.hot_biome_boundary = parsed_value;
                     else if (key == "wet_biome_boundary") config.wet_biome_boundary = parsed_value;
                     else if (key == "dry_biome_boundary") config.dry_biome_boundary = parsed_value;
+                    else if (key == "min_biome_size") config.min_biome_size = parsed_value;
                 }
                 else {
                     const int parsed_value = stoi(value);

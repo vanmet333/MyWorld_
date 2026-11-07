@@ -590,7 +590,7 @@ const {
             return;
     }
 
-    // Fallback-цвета старых типов ландшафта: вода, пляж, равнина, горы, снег.
+    // Fallback-цвета ландшафта: вода, пляж, равнина, горы, снег.
     const array<uint32_t, 6> fallback_colors = {
         (16u << 16) | (55u << 8) | 140u,
         (15u << 16) | (92u << 8) | 215u,
@@ -600,18 +600,17 @@ const {
         (205u << 16) | (223u << 8) | 249u
     };
 
-    // Fallback-цвета биомов (порядок соответствует ID в biome_map).
-    // Для plains сохранён прежний цвет обычной суши.
+    // Fallback-цвета биомов (порядок соответствует ID в biome_map)
     const array<uint32_t, 9> biome_fallback_colors = {
         (255u << 16) | (250u << 8) | 250u, // 0 snow_plains
         (240u << 16) | (248u << 8) | 255u, // 1 snow_taiga
         (5u << 16) | (54u << 8) | 5u,      // 2 taiga
         (23u << 16) | (165u << 8) | 39u,   // 3 plains
         (15u << 16) | (145u << 8) | 29u,   // 4 forest
-        (74u << 16) | (49u << 8) | 35u,    // 5 dark_forest
+        (85u << 16) | (55u << 8) | 35u,    // 5 dark_forest
         (255u << 16) | (211u << 8) | 78u,  // 6 desert
         (237u << 16) | (164u << 8) | 35u,  // 7 savanna
-        (10u << 16) | (54u << 8) | 23u    // 8 jungle
+        (15u << 16) | (70u << 8) | 30u    // 8 jungle
     };
     const bool use_flat_colors = tile_size < 7.0f;
     vector<TileTexture>* textures = use_flat_colors ? nullptr : &tile_textures();

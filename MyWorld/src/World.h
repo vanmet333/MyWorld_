@@ -39,17 +39,12 @@ struct WorldGenerationConfig {
     double iron_chance;
     double gold_chance;
     double platinum_chance;
-    //Humidity
-    double sand_humidity;
-    double plains_humidity;
-    double mountains_humidity;
-    double highlands_humidity;
     //Biomes
     double cold_biome_boundary;
     double hot_biome_boundary;
     double dry_biome_boundary;
     double wet_biome_boundary;
-
+    double min_biome_size;
 
     static WorldGenerationConfig load(const string& path = "world_consts.txt") {
         WorldGenerationConfig c{};
