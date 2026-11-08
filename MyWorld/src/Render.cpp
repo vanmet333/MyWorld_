@@ -12,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <cwctype>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -109,8 +110,10 @@ namespace {
 
         BitmapData data{};
         const Rect rect(0, 0, static_cast<INT>(texture.width), static_cast<INT>(texture.height));
-        if (bitmap->LockBits(&rect, ImageLockModeRead, PixelFormat32bppARGB, &data) != Ok)
+        if (bitmap->LockBits(&rect, ImageLockModeRead, PixelFormat32bppARGB, &data) != Ok) {
+            texture = {};
             return texture;
+        }
 
         const LONG stride = data.Stride;
         const bool bottom_up = stride < 0;
@@ -204,20 +207,87 @@ namespace {
             }();
         return textures;
     }
-    vector<TileTexture>& tree_textures() {
-        static vector<TileTexture> textures = [] {
-            vector<TileTexture> loaded;
-            const filesystem::path directory =
-                resolve_asset_directory(L"assets/textures/tree/plains");
-            for (int variant = 1; variant <= 3; ++variant) {
-                loaded.push_back(load_texture(
-                    directory / (L"plains_tree_ver" + to_wstring(variant) + L".png")
-                ));
+    // Индексы совпадают с WorldGenerationConfig::tree_density/clumpiness:
+    // 0..8 — биомы, 9 — пляж.
+    using TreeTextureBank = array<vector<TileTexture>, 10>;
+
+    TreeTextureBank& tree_textures() {
+        static TreeTextureBank textures = [] {
+            constexpr array<const wchar_t*, 10> folder_names = {
+                L"snow_plains",
+                L"snow_taiga",
+                L"taiga",
+                L"plains",
+                L"forest",
+                L"dark_forest",
+                L"desert",
+                L"savanna",
+                L"jungle",
+                L"beach"
+            };
+
+            TreeTextureBank loaded{};
+            const filesystem::path root =
+                resolve_asset_directory(L"assets/textures/tree");
+
+            for (size_t biome_id = 0; biome_id < folder_names.size(); ++biome_id) {
+                const filesystem::path directory = root / folder_names[biome_id];
+                error_code error;
+
+                if (!filesystem::is_directory(directory, error)) {
+                    cerr << "[TREE TEXTURES] Missing folder: "
+                        << string(tree_region_names[biome_id]) << '\n';
+                    continue;
+                }
+
+                vector<filesystem::path> image_files;
+                for (filesystem::directory_iterator it(directory, error), end;
+                    !error && it != end;
+                    it.increment(error)) {
+                    error_code file_error;
+                    if (!it->is_regular_file(file_error) || file_error)
+                        continue;
+
+                    wstring extension = it->path().extension().wstring();
+                    transform(extension.begin(), extension.end(), extension.begin(),
+                        [](wchar_t character) {
+                            return static_cast<wchar_t>(towlower(character));
+                        });
+
+                    if (extension == L".png")
+                        image_files.push_back(it->path());
+                }
+
+                sort(image_files.begin(), image_files.end(),
+                    [](const filesystem::path& left, const filesystem::path& right) {
+                        return left.filename().wstring() < right.filename().wstring();
+                    });
+
+                for (const filesystem::path& image_path : image_files) {
+                    TileTexture texture = load_texture(image_path);
+                    if (texture.width == 0 || texture.height == 0 ||
+                        texture.pixels.empty() ||
+                        texture.alpha.size() != texture.pixels.size()) {
+                        cerr << "[TREE TEXTURES] Could not load: "
+                            << image_path.filename().string() << '\n';
+                        continue;
+                    }
+
+                    loaded[biome_id].push_back(move(texture));
+                }
+
+                cout << "[TREE TEXTURES] " << folder_names[biome_id]
+                    << ": " << loaded[biome_id].size()
+                    << " variant(s) loaded" << '\n';
             }
+
             return loaded;
-            }();
+        }();
+
         return textures;
     }
+
+
 
     vector<TileTexture>& mineral_textures() {
         static vector<TileTexture> textures = [] {
@@ -922,7 +992,7 @@ const {
     const int last_chunk_x = last_tile_x / Chunk::size_in_tiles;
     const int last_chunk_y = last_tile_y / Chunk::size_in_tiles;
 
-    const vector<TileTexture>& available_tree_textures = tree_textures();
+    const TreeTextureBank& available_tree_textures = tree_textures();
     const vector<TileTexture>& available_mineral_textures = mineral_textures();
 
     vector<unsigned char> drawn(objects.size(), 0);
@@ -957,10 +1027,21 @@ const {
 
         const TileTexture* object_texture = nullptr;
         if (object.type == WorldObjectType::Tree) {
-            if (object.variant >= 0 && static_cast<size_t>(object.variant) < available_tree_textures.size() &&
-                !available_tree_textures[object.variant].pixels.empty()) {
-                object_texture = &available_tree_textures[object.variant];
-            }
+            if (object.biome_id < 0 ||
+                static_cast<size_t>(object.biome_id) >= available_tree_textures.size())
+                continue;
+
+            const vector<TileTexture>& variants =
+                available_tree_textures[static_cast<size_t>(object.biome_id)];
+
+            // Количество вариантов берётся из реально найденных PNG-файлов.
+            // variant хранит seed, поэтому добавление новых PNG не требует правок C++.
+            if (variants.empty())
+                continue;
+
+            const size_t variant_index =
+                static_cast<uint32_t>(object.variant) % variants.size();
+            object_texture = &variants[variant_index];
         }
         else if (object.type == WorldObjectType::Mineral) {
             if (object.variant >= 0 && static_cast<size_t>(object.variant) < available_mineral_textures.size() &&
