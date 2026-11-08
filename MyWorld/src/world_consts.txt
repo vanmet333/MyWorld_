@@ -1,30 +1,74 @@
 # World map dimensions in tiles.
 map_width=512
 map_height=512
-# Number of noise octaves.
+
+# Number of noise octaves and initial terrain scale.
 octaves=9
-# Larger values make the initial height-map octave finer and islands smaller.
 scale=3
-# Noise scale for the heat map.
 heat_map_scale=1
-# Noise amplitude and biome height thresholds.
 persistence=0.45
+
+# Terrain thresholds.
 deep_water_boundary=0.5
 shallow_water_boundary=0.65
 beach_boundary=0.70
 plains_boundary=0.9
 mountains_boundary=0.97
+
+# Climate thresholds.
 cold_biome_boundary=0.3
 hot_biome_boundary=0.7
 dry_biome_boundary=0.3
 wet_biome_boundary=0.7
+
 # Minimum area for a continent; smaller land regions are islands.
 continent_min_area_fraction=0.004
 
-# Initial object counts and generated variant ranges.
-tree_count=200
-tree_variant_count=3
+# Tree distribution per biome.
+# tree_density: 0.0..1.0 fraction of valid 3x3 placement anchors.
+# Example: 0.001 means approximately 1 tree per 1000 eligible anchor cells.
+# tree_clumpiness: 0.0 = scattered evenly, 1.0 = strong groups with open spaces.
+# snow_plains (0)
+snow_plains_tree_density=0.0007
+snow_plains_tree_clumpiness=0.35
 
+# snow_taiga (1)
+snow_taiga_tree_density=0.0012
+snow_taiga_tree_clumpiness=0.45
+
+# taiga (2)
+taiga_tree_density=0.0015
+taiga_tree_clumpiness=0.45
+
+# plains (3)
+plains_tree_density=0.0005
+plains_tree_clumpiness=0.15
+
+# forest (4)
+forest_tree_density=0.0015
+forest_tree_clumpiness=0.45
+
+# dark_forest (5)
+dark_forest_tree_density=0.0020
+dark_forest_tree_clumpiness=0.65
+
+# desert (6): cactus and desert vegetation sprites.
+desert_tree_density=0.00025
+desert_tree_clumpiness=0.25
+
+# savanna (7)
+savanna_tree_density=0.0008
+savanna_tree_clumpiness=0.55
+
+# jungle (8)
+jungle_tree_density=0.0020
+jungle_tree_clumpiness=0.60
+
+# Beach is a separate terrain type, not one of the nine climate biomes.
+beach_tree_density=0.0003
+beach_tree_clumpiness=0.35
+
+# Minerals.
 mineral_count=200
 rock_chance=0.5
 copper_chance=0.2
@@ -32,16 +76,5 @@ iron_chance=0.2
 gold_chance=0.09
 platinum_chance=0.01
 
-
-# Object footprints in tiles. Variant indexes start at zero.
-tree_width_tiles=3
-tree_narrow_variant=2
-tree_narrow_width_tiles=2
-tree_height_tiles=3
-
-# Placement retry budget: count * multiplier + padding.
-placement_attempt_multiplier=30
-placement_attempt_padding=100
-
-#biomes in % => 1 = 1%
+# Biomes in percent; 1 = 1%.
 min_biome_size=0.5

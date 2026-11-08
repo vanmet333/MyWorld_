@@ -1,15 +1,12 @@
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
-#include <utility>
 
 using ObjectId = std::uint32_t;
 
 enum class WorldObjectType {
     Tree,
     Mineral
-
 };
 
 enum class MineralVariant : int {
@@ -30,6 +27,5 @@ struct WorldObject {
     int height{ 1 };
     bool is_dynamic{};
     int variant{};
+    int biome_id{ -1 }; // Для дерева: 0..8 — биом, 9 — пляж; для остальных объектов -1.
 };
-
-using InitialItem = std::pair<WorldObjectType, std::size_t>;

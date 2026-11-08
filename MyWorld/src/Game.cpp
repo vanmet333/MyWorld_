@@ -1,5 +1,7 @@
 #include "Game.h"
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -39,37 +41,69 @@ namespace {
             throw runtime_error("Failed to open world_consts.txt: " + file_path.string());
 
         WorldGenerationConfig config{};
+
+        constexpr array<const char*, WorldGenerationConfig::tree_region_count> tree_region_names = {
+            "snow_plains", "snow_taiga", "taiga", "plains", "forest",
+            "dark_forest", "desert", "savanna", "jungle", "beach"
+        };
+
         string line;
         while (getline(file, line)) {
             const size_t separator = line.find('=');
-            if (separator == string::npos) continue;
+            if (separator == string::npos)
+                continue;
 
             string key = line.substr(0, separator);
             string value = line.substr(separator + 1);
 
-            // Удаляем пробелы и невидимые символы с концов строк
-            auto trim = [](string& s) {
-                while (!s.empty() && isspace((unsigned char)s.front())) s.erase(s.begin());
-                while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back();
-                };
+            const auto trim = [](string& text) {
+                while (!text.empty() && isspace(static_cast<unsigned char>(text.front())))
+                    text.erase(text.begin());
+                while (!text.empty() && isspace(static_cast<unsigned char>(text.back())))
+                    text.pop_back();
+            };
             trim(key);
             trim(value);
 
-            if (key.empty()) continue;
+            if (key.empty() || key.front() == '#')
+                continue;
 
             try {
+                bool is_tree_setting = false;
+
+                for (size_t region = 0; region < tree_region_names.size(); ++region) {
+                    const string prefix = string(tree_region_names[region]) + "_tree_";
+
+                    if (key == prefix + "density") {
+                        config.tree_density[region] = stod(value);
+                        is_tree_setting = true;
+                        break;
+                    }
+
+                    if (key == prefix + "clumpiness") {
+                        config.tree_clumpiness[region] = stod(value);
+                        is_tree_setting = true;
+                        break;
+                    }
+                }
+
+                if (is_tree_setting)
+                    continue;
+
                 if (key == "persistence" ||
                     key == "deep_water_boundary" || key == "shallow_water_boundary" ||
-                    key == "beach_boundary" || key == "plains_boundary" || key == "mountains_boundary" ||
-                    key == "rock_chance" || key == "copper_chance" || key == "iron_chance" ||
-                    key == "gold_chance" || key == "platinum_chance" || key == "cold_biome_boundary" ||
-                    key == "hot_biome_boundary" || key == "wet_biome_boundary" || key == "dry_biome_boundary" ||
-                    key == "min_biome_size"
-                    )
-                {
+                    key == "beach_boundary" || key == "plains_boundary" ||
+                    key == "mountains_boundary" ||
+                    key == "rock_chance" || key == "copper_chance" ||
+                    key == "iron_chance" || key == "gold_chance" ||
+                    key == "platinum_chance" || key == "cold_biome_boundary" ||
+                    key == "hot_biome_boundary" || key == "wet_biome_boundary" ||
+                    key == "dry_biome_boundary" || key == "min_biome_size") {
                     const double parsed_value = stod(value);
-                    if (!isfinite(parsed_value)) continue;
-                    if (key == "persistence" && parsed_value >= 0.0) config.persistence = parsed_value;
+                    if (!isfinite(parsed_value))
+                        throw invalid_argument("value must be finite");
+
+                    if (key == "persistence") config.persistence = parsed_value;
                     else if (key == "deep_water_boundary") config.deep_water_boundary = parsed_value;
                     else if (key == "shallow_water_boundary") config.shallow_water_boundary = parsed_value;
                     else if (key == "beach_boundary") config.beach_boundary = parsed_value;
@@ -88,23 +122,17 @@ namespace {
                 }
                 else {
                     const int parsed_value = stoi(value);
+
                     if (key == "map_height" && parsed_value > 0) config.map_height = parsed_value;
                     else if (key == "map_width" && parsed_value > 0) config.map_width = parsed_value;
                     else if (key == "octaves" && parsed_value > 0) config.octaves = parsed_value;
                     else if (key == "scale" && parsed_value > 0) config.scale = parsed_value;
                     else if (key == "heat_map_scale" && parsed_value > 0) config.heat_map_scale = parsed_value;
-                    else if (key == "tree_count" && parsed_value >= 0) config.tree_count = parsed_value;
-                    else if (key == "tree_variant_count" && parsed_value > 0) config.tree_variant_count = parsed_value;
-                    else if (key == "tree_width_tiles" && parsed_value > 0) config.tree_width_tiles = parsed_value;
-                    else if (key == "tree_narrow_variant" && parsed_value >= 0) config.tree_narrow_variant = parsed_value;
-                    else if (key == "tree_narrow_width_tiles" && parsed_value > 0) config.tree_narrow_width_tiles = parsed_value;
-                    else if (key == "tree_height_tiles" && parsed_value > 0) config.tree_height_tiles = parsed_value;
-                    else if (key == "placement_attempt_multiplier" && parsed_value >= 0) config.placement_attempt_multiplier = parsed_value;
-                    else if (key == "placement_attempt_padding" && parsed_value >= 0) config.placement_attempt_padding = parsed_value;
-                    else if (key == "mineral_count" && parsed_value >= 0) config.mineral_count = parsed_value; // Читаем минералы
+                    else if (key == "mineral_count" && parsed_value >= 0) config.mineral_count = parsed_value;
                 }
             }
-            catch (const exception&) {
+            catch (const exception& error) {
+                throw runtime_error("Invalid world_consts value for '" + key + "': " + error.what());
             }
         }
 
@@ -116,15 +144,33 @@ namespace {
             config.beach_boundary <= config.shallow_water_boundary ||
             config.plains_boundary <= config.beach_boundary ||
             config.mountains_boundary <= config.plains_boundary ||
-            config.tree_variant_count <= 0 ||
-            config.tree_width_tiles <= 0 ||
-            config.tree_narrow_width_tiles <= 0 ||
-            config.tree_height_tiles <= 0) {
+            config.mineral_count < 0) {
             throw runtime_error("world_consts.txt has missing or invalid required values");
+        }
+
+        for (size_t region = 0; region < WorldGenerationConfig::tree_region_count; ++region) {
+            const double density = config.tree_density[region];
+            const double clumpiness = config.tree_clumpiness[region];
+
+            if (!isfinite(density) || density < 0.0 || density > 1.0) {
+                throw runtime_error(
+                    string(tree_region_names[region]) +
+                    "_tree_density must be between 0.0 and 1.0"
+                );
+            }
+
+            if (!isfinite(clumpiness) || clumpiness < 0.0 || clumpiness > 1.0) {
+                throw runtime_error(
+                    string(tree_region_names[region]) +
+                    "_tree_clumpiness must be between 0.0 and 1.0"
+                );
+            }
         }
 
         return config;
     }
+
+
 }
 
 // Полный сброс мира: вместе с картами уничтожаются все объекты и чанки.
@@ -153,10 +199,7 @@ void Game::start()
     world_.generate_tile_map(map_height, map_width);
     world_.generate_humidity_map(map_height, map_width, octaves, config.scale);
     world_.generate_biome_map(map_height, map_width);
-    world_.create_initial_items({
-        { WorldObjectType::Tree, static_cast<size_t>(config.tree_count) },
-        { WorldObjectType::Mineral, static_cast<size_t>(config.mineral_count) }
-        });
+    world_.create_initial_items(static_cast<size_t>(config.mineral_count));
 }
 
 void Game::run()

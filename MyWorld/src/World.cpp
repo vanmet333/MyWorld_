@@ -730,50 +730,245 @@ void World::generate_biome_map(int height, int width) {
     cout << endl;
 }
 
-void World::create_initial_items(const vector<InitialItem>& items) {
-    for (const auto& [type, count] : items) {
-        switch (type) {
-        case WorldObjectType::Tree:
-            generate_trees(count);
-            break;
-        case WorldObjectType::Mineral:
-            generate_minerals(count);
-            break;
-        }
-    }
+void World::create_initial_items(size_t mineral_count) {
+    generate_trees();
+    generate_minerals(mineral_count);
 }
 
-void World::generate_trees(size_t count) {
-    if (map_width_ <= 0 || map_height_ <= 0 || tiled_map_.empty()) return;
-    uniform_int_distribution<int> x_dist(0, map_width_ - 1);
-    uniform_int_distribution<int> y_dist(0, map_height_ - 1);
-    if (generation_config_.tree_variant_count <= 0) return;
-    uniform_int_distribution<int> variant_dist(0, generation_config_.tree_variant_count - 1);
-    const size_t max_attempts = count * static_cast<size_t>(max(0, generation_config_.placement_attempt_multiplier)) +
-        static_cast<size_t>(max(0, generation_config_.placement_attempt_padding));
-    size_t attempts = 0;
-    while (count > 0 && attempts++ < max_attempts) {
-        const int x = x_dist(random_engine);
-        const int y = y_dist(random_engine);
-        const int variant = variant_dist(random_engine);
-        const int object_width = variant == generation_config_.tree_narrow_variant
-            ? generation_config_.tree_narrow_width_tiles : generation_config_.tree_width_tiles;
-        const int object_height = generation_config_.tree_height_tiles;
-        bool overlaps_tree = false;
-        for (const WorldObject& object : objects_) {
-            if (object.type != WorldObjectType::Tree) continue;
-            const bool overlaps_x = x < object.x + object.width && object.x < x + object_width;
-            const bool overlaps_y = y < object.y + object.height && object.y < y + object_height;
-            if (overlaps_x && overlaps_y) {
-                overlaps_tree = true;
-                break;
+void World::generate_trees() {
+    if (map_width_ <= 0 || map_height_ <= 0 ||
+        tiled_map_.empty() || biome_map_.empty())
+        return;
+
+    // Дерево занимает технический footprint 3x3 клетки карты.
+    // Это не настройка распределения: плотность и группировка задаются только
+    // *_tree_density и *_tree_clumpiness в world_consts.txt.
+    constexpr int tree_width_tiles = 3;
+    constexpr int tree_height_tiles = 3;
+
+    struct Candidate {
+        int x{};
+        int y{};
+    };
+
+    constexpr array<const char*, WorldGenerationConfig::tree_region_count> region_names = {
+        "snow_plains", "snow_taiga", "taiga", "plains", "forest",
+        "dark_forest", "desert", "savanna", "jungle", "beach"
+    };
+
+    const size_t map_cell_count =
+        static_cast<size_t>(map_width_) * static_cast<size_t>(map_height_);
+
+    // ID 0..8 — климатические биомы, ID 9 — пляж.
+    const auto region_at = [&](int x, int y) -> int {
+        if (y < 0 || y >= static_cast<int>(tiled_map_.size()) ||
+            x < 0 || x >= static_cast<int>(tiled_map_[y].size()))
+            return -1;
+
+        const int tile = tiled_map_[y][x];
+        if (tile == 2)
+            return 9;
+
+        if (tile != 3 ||
+            y >= static_cast<int>(biome_map_.size()) ||
+            x >= static_cast<int>(biome_map_[y].size()))
+            return -1;
+
+        const int biome_id = biome_map_[y][x];
+        return biome_id >= 0 && biome_id < 9 ? biome_id : -1;
+    };
+
+    array<vector<Candidate>, WorldGenerationConfig::tree_region_count> candidates;
+
+    // Собираем только такие точки-якоря, в которых весь footprint дерева
+    // помещается в одном биоме. Деревья не пересекают границы биомов/пляжей.
+    for (int y = 0; y < map_height_; ++y) {
+        for (int x = 0; x < map_width_; ++x) {
+            const int region_id = region_at(x, y);
+            if (region_id < 0)
+                continue;
+
+            if (can_place_object(
+                x, y, tree_width_tiles, tree_height_tiles,
+                WorldObjectType::Tree, region_id
+            )) {
+                candidates[static_cast<size_t>(region_id)].push_back({ x, y });
             }
         }
-        if (!overlaps_tree &&
-            can_place_object(x, y, object_width, object_height, WorldObjectType::Tree)) {
-            add_object({ 0, WorldObjectType::Tree, x, y, object_width, object_height, false, variant });
-            --count;
+    }
+
+    // Общая occupancy-карта исключает наложение деревьев без O(N^2)-поиска
+    // по уже созданным объектам.
+    vector<unsigned char> occupied(map_cell_count, 0);
+    uniform_int_distribution<int> variant_seed_distribution(0, 1000000000);
+
+    for (size_t region_id = 0; region_id < candidates.size(); ++region_id) {
+        vector<Candidate>& region_candidates = candidates[region_id];
+        if (region_candidates.empty())
+            continue;
+
+        const double density = clamp(generation_config_.tree_density[region_id], 0.0, 1.0);
+        const double clumpiness = clamp(generation_config_.tree_clumpiness[region_id], 0.0, 1.0);
+
+        // Плотность считается от допустимых точек-якорей, а не от всей карты.
+        const size_t target_count = static_cast<size_t>(
+            llround(static_cast<double>(region_candidates.size()) * density)
+        );
+        if (target_count == 0) {
+            cout << "[TREES] " << region_names[region_id]
+                << ": placed=0, target=0, candidates=" << region_candidates.size() << '\n';
+            continue;
         }
+
+        // Перемешивание задаёт независимое равномерное распределение при clumpiness=0.
+        shuffle(region_candidates.begin(), region_candidates.end(), random_engine);
+
+        vector<unsigned char> candidate_mask(map_cell_count, 0);
+        for (const Candidate& candidate : region_candidates) {
+            candidate_mask[
+                static_cast<size_t>(candidate.y) * map_width_ + candidate.x
+            ] = 1;
+        }
+
+        const auto footprint_is_free = [&](int x, int y) {
+            if (x < 0 || y < 0 ||
+                x + tree_width_tiles > map_width_ ||
+                y + tree_height_tiles > map_height_)
+                return false;
+
+            for (int dy = 0; dy < tree_height_tiles; ++dy) {
+                for (int dx = 0; dx < tree_width_tiles; ++dx) {
+                    const size_t cell =
+                        static_cast<size_t>(y + dy) * map_width_ + (x + dx);
+                    if (occupied[cell])
+                        return false;
+                }
+            }
+            return true;
+        };
+
+        const auto try_place_tree = [&](int x, int y) {
+            if (x < 0 || y < 0 || x >= map_width_ || y >= map_height_)
+                return false;
+
+            const size_t anchor =
+                static_cast<size_t>(y) * map_width_ + x;
+            if (!candidate_mask[anchor] || !footprint_is_free(x, y))
+                return false;
+
+            const int variant_seed = variant_seed_distribution(random_engine);
+            add_object({
+                0,
+                WorldObjectType::Tree,
+                x,
+                y,
+                tree_width_tiles,
+                tree_height_tiles,
+                false,
+                variant_seed,
+                static_cast<int>(region_id)
+            });
+
+            for (int dy = 0; dy < tree_height_tiles; ++dy) {
+                for (int dx = 0; dx < tree_width_tiles; ++dx) {
+                    occupied[
+                        static_cast<size_t>(y + dy) * map_width_ + (x + dx)
+                    ] = 1;
+                }
+            }
+            return true;
+        };
+
+        size_t placed_count = 0;
+
+        if (clumpiness <= 0.0001) {
+            // 0: максимально равномерное случайное размещение без кластеров.
+            for (const Candidate& candidate : region_candidates) {
+                if (placed_count >= target_count)
+                    break;
+                if (try_place_tree(candidate.x, candidate.y))
+                    ++placed_count;
+            }
+        }
+        else {
+            // Чем выше clumpiness, тем меньше центров групп и больше деревьев
+            // вокруг каждого центра. Общее целевое число от этого не меняется.
+            const double cluster_count_float =
+                static_cast<double>(target_count) +
+                (sqrt(static_cast<double>(target_count)) -
+                    static_cast<double>(target_count)) * clumpiness;
+
+            const size_t cluster_count = clamp(
+                static_cast<size_t>(max(1.0, round(cluster_count_float))),
+                static_cast<size_t>(1),
+                target_count
+            );
+
+            const double cells_per_cluster =
+                static_cast<double>(region_candidates.size()) / cluster_count;
+            const double cluster_radius = clamp(
+                sqrt(cells_per_cluster) * 0.30 * clumpiness,
+                2.0,
+                24.0
+            );
+            normal_distribution<double> offset_distribution(
+                0.0, max(1.0, cluster_radius * 0.45)
+            );
+
+            for (size_t cluster = 0;
+                cluster < cluster_count && placed_count < target_count;
+                ++cluster) {
+                const size_t center_index =
+                    cluster * region_candidates.size() / cluster_count;
+                const Candidate center = region_candidates[center_index];
+
+                const size_t group_target =
+                    target_count / cluster_count +
+                    (cluster < target_count % cluster_count ? 1 : 0);
+
+                for (size_t member = 0;
+                    member < group_target && placed_count < target_count;
+                    ++member) {
+                    bool placed = false;
+
+                    // Первое дерево фиксирует центр группы, следующие пробуются
+                    // ближе к нему по нормальному распределению.
+                    for (int attempt = 0; attempt < 48; ++attempt) {
+                        int x = center.x;
+                        int y = center.y;
+
+                        if (member > 0 || attempt > 0) {
+                            x += static_cast<int>(lround(offset_distribution(random_engine)));
+                            y += static_cast<int>(lround(offset_distribution(random_engine)));
+                        }
+
+                        if (try_place_tree(x, y)) {
+                            ++placed_count;
+                            placed = true;
+                            break;
+                        }
+                    }
+
+                    (void)placed;
+                }
+            }
+
+            // Если узкая/изрезанная область не позволила разместить все деревья
+            // внутри кластеров, добираем оставшиеся точки случайно по всему биому.
+            for (const Candidate& candidate : region_candidates) {
+                if (placed_count >= target_count)
+                    break;
+                if (try_place_tree(candidate.x, candidate.y))
+                    ++placed_count;
+            }
+        }
+
+        cout << "[TREES] " << region_names[region_id]
+            << ": placed=" << placed_count
+            << ", target=" << target_count
+            << ", candidates=" << region_candidates.size()
+            << ", density=" << density
+            << ", clumpiness=" << clumpiness << '\n';
     }
 }
 
@@ -801,9 +996,11 @@ void World::generate_minerals(size_t count) {
     }
     std::discrete_distribution<int> variant_dist(weights.begin(), weights.end());
 
-    const size_t max_attempts =
-        count * static_cast<size_t>(max(0, generation_config_.placement_attempt_multiplier)) +
-        static_cast<size_t>(max(0, generation_config_.placement_attempt_padding));
+    // Ограничение повторов остаётся внутренней деталью размещения минералов;
+    // плотность и группировка деревьев от него не зависят.
+    constexpr size_t attempts_per_mineral = 30;
+    constexpr size_t extra_attempts = 100;
+    const size_t max_attempts = count * attempts_per_mineral + extra_attempts;
 
     size_t attempts = 0;
     while (count > 0 && attempts++ < max_attempts) {
@@ -819,17 +1016,50 @@ void World::generate_minerals(size_t count) {
     }
 }
 
-bool World::can_place_object(int x, int y, int width, int height, WorldObjectType type) const {
+bool World::can_place_object(
+    int x, int y, int width, int height,
+    WorldObjectType type, int required_tree_region
+) const {
     if (width <= 0 || height <= 0 || x < 0 || y < 0 ||
-        x + width > map_width_ || y + height > map_height_) return false;
+        x + width > map_width_ || y + height > map_height_)
+        return false;
+
+    const auto region_at = [&](int tile_x, int tile_y) -> int {
+        if (tile_y < 0 || tile_y >= static_cast<int>(tiled_map_.size()) ||
+            tile_x < 0 || tile_x >= static_cast<int>(tiled_map_[tile_y].size()))
+            return -1;
+
+        const int tile = tiled_map_[tile_y][tile_x];
+        if (tile == 2)
+            return 9; // Beach vegetation.
+
+        if (tile != 3 ||
+            tile_y >= static_cast<int>(biome_map_.size()) ||
+            tile_x >= static_cast<int>(biome_map_[tile_y].size()))
+            return -1;
+
+        const int biome_id = biome_map_[tile_y][tile_x];
+        return biome_id >= 0 && biome_id < 9 ? biome_id : -1;
+    };
 
     for (int tile_y = y; tile_y < y + height; ++tile_y) {
         for (int tile_x = x; tile_x < x + width; ++tile_x) {
             const int tile = tiled_map_[tile_y][tile_x];
-            if (type == WorldObjectType::Tree && tile != 3) return false;
-            if (type == WorldObjectType::Mineral && tile != 4) return false;
+
+            if (type == WorldObjectType::Mineral) {
+                if (tile != 4)
+                    return false;
+            }
+            else if (type == WorldObjectType::Tree) {
+                // Все клетки footprint должны принадлежать тому же биому,
+                // что и дерево. Одно дерево не пересекает границу леса/пустыни.
+                if (required_tree_region < 0 ||
+                    region_at(tile_x, tile_y) != required_tree_region)
+                    return false;
+            }
         }
     }
+
     return true;
 }
 
