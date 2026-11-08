@@ -235,8 +235,8 @@ namespace {
                 error_code error;
 
                 if (!filesystem::is_directory(directory, error)) {
-                    cerr << "[TREE TEXTURES] Missing folder: "
-                        << string(tree_region_names[biome_id]) << '\n';
+                    wcerr << L"[TREE TEXTURES] Missing folder: "
+                        << folder_names[biome_id] << L'\n';
                     continue;
                 }
 
