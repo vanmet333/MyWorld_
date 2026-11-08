@@ -453,8 +453,7 @@ void World::generate_biome_map(int height, int width) {
         return;
     }
 
-    // Заполняем именно поле класса!
-    // 3 = plains по умолчанию.
+    // Заполняем поле класса
     biome_map_.assign(height, vector<int>(width, -1));
 
     for (int y = 0; y < height; ++y) {
@@ -467,7 +466,7 @@ void World::generate_biome_map(int height, int width) {
 
         for (int x = 0; x < width; ++x) {
 
-            // Биомы назначаем только обычной суше.
+            // Назначаем биомы только суше
             if (tiled_map_[y][x] != 3)
                 continue;
 
@@ -478,39 +477,39 @@ void World::generate_biome_map(int height, int width) {
             if (temp < generation_config_.cold_biome_boundary) {
 
                 if (hum < generation_config_.dry_biome_boundary)
-                    biome_map_[y][x] = 0; // snow_plains
+                    biome_map_[y][x] = 0; // снежные равнины
 
                 else if (hum <= generation_config_.wet_biome_boundary)
-                    biome_map_[y][x] = 1; // snow_taiga
+                    biome_map_[y][x] = 1; // снежная тайга
 
                 else
-                    biome_map_[y][x] = 2; // taiga
+                    biome_map_[y][x] = 2; // тайга
             }
 
             // Умеренные биомы
             else if (temp <= generation_config_.hot_biome_boundary) {
 
                 if (hum < generation_config_.dry_biome_boundary)
-                    biome_map_[y][x] = 3; // plains
+                    biome_map_[y][x] = 3; // равнины
 
                 else if (hum <= generation_config_.wet_biome_boundary)
-                    biome_map_[y][x] = 4; // forest
+                    biome_map_[y][x] = 4; // лес
 
                 else
-                    biome_map_[y][x] = 5; // dark_forest
+                    biome_map_[y][x] = 5; // тёмный лес
             }
 
             // Жаркие биомы
             else {
 
                 if (hum < generation_config_.dry_biome_boundary)
-                    biome_map_[y][x] = 6; // desert
+                    biome_map_[y][x] = 6; // пустыня
 
                 else if (hum <= generation_config_.wet_biome_boundary)
-                    biome_map_[y][x] = 7; // savanna
+                    biome_map_[y][x] = 7; // саванна
 
                 else
-                    biome_map_[y][x] = 8; // jungle
+                    biome_map_[y][x] = 8; // джунгли
             }
         }
     }
