@@ -5,3 +5,5 @@
 Для - "Пояснение"
 big thankyou for tree generator https://mmorwynn.itch.io/pixel-tree-generator 
 (деревья получены оттуда, часть деревьев редактированны)
+кактусы отсюда(с благодарностью) https://wrlck.itch.io/simple-desert
+(они немного редактированы)
