@@ -1049,43 +1049,35 @@ const {
         static_cast<int>(floor((camera_y + target_map_size) / tile_size)));
     if (last_tile_x < first_tile_x || last_tile_y < first_tile_y) return;
 
-    const int first_chunk_x = first_tile_x / Chunk::size_in_tiles;
-    const int first_chunk_y = first_tile_y / Chunk::size_in_tiles;
+    // Объекты занимают несколько чанков только когда их footprint пересекает границу.
+    // Берём также один предыдущий чанк: дерево может начинаться за левым/верхним краем
+    // экрана, но его спрайт ещё частично виден.
+    const int first_chunk_x = max(0, first_tile_x / Chunk::size_in_tiles - 1);
+    const int first_chunk_y = max(0, first_tile_y / Chunk::size_in_tiles - 1);
     const int last_chunk_x = last_tile_x / Chunk::size_in_tiles;
     const int last_chunk_y = last_tile_y / Chunk::size_in_tiles;
 
     const TreeTextureBank& available_tree_textures = tree_textures();
     const vector<TileTexture>& available_mineral_textures = mineral_textures();
 
-    vector<unsigned char> drawn(objects.size(), 0);
-    vector<size_t> visible_objects;
+    // Каждый объект обрабатывается только в чанке, где находится его левый верхний
+    // угол. Поэтому не нужны массив drawn размером со весь мир, временный список
+    // видимых объектов и сортировка этого списка каждый кадр.
     for (int chunk_y = first_chunk_y; chunk_y <= last_chunk_y; ++chunk_y) {
         for (int chunk_x = first_chunk_x; chunk_x <= last_chunk_x; ++chunk_x) {
-            const size_t chunk_index = static_cast<size_t>(chunk_y) * chunks_x + chunk_x;
-            if (chunk_index >= chunks.size()) continue;
-            for (ObjectId id : chunks[chunk_index].static_object_ids()) {
+            const size_t current_chunk_index =
+                static_cast<size_t>(chunk_y) * chunks_x + chunk_x;
+            if (current_chunk_index >= chunks.size()) continue;
+
+            for (ObjectId id : chunks[current_chunk_index].static_object_ids()) {
                 if (id == 0 || static_cast<size_t>(id) > objects.size()) continue;
-                const size_t object_index = static_cast<size_t>(id - 1);
-                if (drawn[object_index]) continue;
-                drawn[object_index] = 1;
-                visible_objects.push_back(object_index);
-            }
-        }
-    }
+                const WorldObject& object = objects[static_cast<size_t>(id - 1)];
 
-    // Сначала рисуем дальние объекты; основание ниже на карте — ближний слой.
-    stable_sort(visible_objects.begin(), visible_objects.end(), [&](size_t left, size_t right) {
-        const WorldObject& a = objects[left];
-        const WorldObject& b = objects[right];
-        if (a.y + a.height != b.y + b.height)
-            return a.y + a.height < b.y + b.height;
-        if (a.x != b.x)
-            return a.x < b.x;
-        return a.id < b.id;
-        });
-
-    for (size_t object_index : visible_objects) {
-        const WorldObject& object = objects[object_index];
+                // ID объекта хранится и в соседних чанках, если footprint пересекает
+                // границу. Рисуем его только из исходного чанка.
+                if (object.x / Chunk::size_in_tiles != chunk_x ||
+                    object.y / Chunk::size_in_tiles != chunk_y)
+                    continue;
 
         const TileTexture* object_texture = nullptr;
         if (object.type == WorldObjectType::Tree) {
@@ -1208,6 +1200,7 @@ const {
                 const uint32_t out_blue = blue + ((old & 0xffu) * inv_alpha + 127u) / 255u;
                 frame_pixels[static_cast<size_t>(screen_y) * target_map_size + screen_x] =
                     (min(out_red, 255u) << 16) | (min(out_green, 255u) << 8) | min(out_blue, 255u);
+            }
             }
         }
     }
