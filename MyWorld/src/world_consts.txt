@@ -29,44 +29,44 @@ continent_min_area_fraction=0.004
 # Example: 0.001 means approximately 1 tree per 1000 eligible anchor cells.
 # tree_clumpiness: 0.0 = scattered evenly, 1.0 = strong groups with open spaces.
 # snow_plains (0)
-snow_plains_tree_density=0.0007
-snow_plains_tree_clumpiness=0.35
+snow_plains_tree_density=0.001
+snow_plains_tree_clumpiness=0.1
 
 # snow_taiga (1)
-snow_taiga_tree_density=0.0012
-snow_taiga_tree_clumpiness=0.45
+snow_taiga_tree_density=0.04
+snow_taiga_tree_clumpiness=0.60
 
 # taiga (2)
-taiga_tree_density=0.0015
-taiga_tree_clumpiness=0.45
+taiga_tree_density=0.05
+taiga_tree_clumpiness=0.60
 
 # plains (3)
-plains_tree_density=0.0005
-plains_tree_clumpiness=0.15
+plains_tree_density=0.005
+plains_tree_clumpiness=0.10
 
 # forest (4)
-forest_tree_density=0.0015
-forest_tree_clumpiness=0.45
+forest_tree_density=0.04
+forest_tree_clumpiness=0.70
 
 # dark_forest (5)
-dark_forest_tree_density=0.0020
-dark_forest_tree_clumpiness=0.65
+dark_forest_tree_density=0.05
+dark_forest_tree_clumpiness=0.1
 
 # desert (6): cactus and desert vegetation sprites.
-desert_tree_density=0.00025
-desert_tree_clumpiness=0.25
+desert_tree_density=0.005
+desert_tree_clumpiness=0.55
 
 # savanna (7)
-savanna_tree_density=0.0008
-savanna_tree_clumpiness=0.55
+savanna_tree_density=0.03
+savanna_tree_clumpiness=0.9
 
 # jungle (8)
-jungle_tree_density=0.0020
-jungle_tree_clumpiness=0.60
+jungle_tree_density=0.07
+jungle_tree_clumpiness=0.80
 
 # Beach is a separate terrain type, not one of the nine climate biomes.
-beach_tree_density=0.0003
-beach_tree_clumpiness=0.35
+beach_tree_density=0.02
+beach_tree_clumpiness=0.10
 
 # Minerals.
 mineral_count=200

@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include <iostream>
+
 using namespace std;
 using namespace Gdiplus;
 
@@ -276,7 +278,7 @@ namespace {
                     loaded[biome_id].push_back(move(texture));
                 }
 
-                cout << "[TREE TEXTURES] " << folder_names[biome_id]
+                wcout << "[TREE TEXTURES] " << folder_names[biome_id]
                     << ": " << loaded[biome_id].size()
                     << " variant(s) loaded" << '\n';
             }
