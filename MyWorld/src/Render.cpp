@@ -1060,9 +1060,9 @@ const {
     const TreeTextureBank& available_tree_textures = tree_textures();
     const vector<TileTexture>& available_mineral_textures = mineral_textures();
 
-    // Каждый объект обрабатывается только в чанке, где находится его левый верхний
-    // угол. Поэтому не нужны массив drawn размером со весь мир, временный список
-    // видимых объектов и сортировка этого списка каждый кадр.
+    // Собираем объекты только из видимых чанков и только в исходном чанке
+    // объекта. Это исключает массив drawn размером со весь мир и дубликаты.
+    vector<size_t> visible_objects;
     for (int chunk_y = first_chunk_y; chunk_y <= last_chunk_y; ++chunk_y) {
         for (int chunk_x = first_chunk_x; chunk_x <= last_chunk_x; ++chunk_x) {
             const size_t current_chunk_index =
@@ -1071,13 +1071,35 @@ const {
 
             for (ObjectId id : chunks[current_chunk_index].static_object_ids()) {
                 if (id == 0 || static_cast<size_t>(id) > objects.size()) continue;
-                const WorldObject& object = objects[static_cast<size_t>(id - 1)];
+                const size_t object_index = static_cast<size_t>(id - 1);
+                const WorldObject& object = objects[object_index];
 
-                // ID объекта хранится и в соседних чанках, если footprint пересекает
-                // границу. Рисуем его только из исходного чанка.
+                // Один объект может быть записан в несколько чанков,
+                // но обрабатывается только там, где начинается его footprint.
                 if (object.x / Chunk::size_in_tiles != chunk_x ||
                     object.y / Chunk::size_in_tiles != chunk_y)
                     continue;
+
+                visible_objects.push_back(object_index);
+            }
+        }
+    }
+
+    // Сохраняем правильный порядок перекрытия деревьев, но сортируем только
+    // действительно видимые объекты. Все ключи задают полный порядок,
+    // поэтому stable_sort здесь не требуется.
+    sort(visible_objects.begin(), visible_objects.end(), [&](size_t left, size_t right) {
+        const WorldObject& a = objects[left];
+        const WorldObject& b = objects[right];
+        if (a.y + a.height != b.y + b.height)
+            return a.y + a.height < b.y + b.height;
+        if (a.x != b.x)
+            return a.x < b.x;
+        return a.id < b.id;
+    });
+
+    for (size_t object_index : visible_objects) {
+        const WorldObject& object = objects[object_index];
 
         const TileTexture* object_texture = nullptr;
         if (object.type == WorldObjectType::Tree) {
@@ -1200,7 +1222,6 @@ const {
                 const uint32_t out_blue = blue + ((old & 0xffu) * inv_alpha + 127u) / 255u;
                 frame_pixels[static_cast<size_t>(screen_y) * target_map_size + screen_x] =
                     (min(out_red, 255u) << 16) | (min(out_green, 255u) << 8) | min(out_blue, 255u);
-            }
             }
         }
     }
