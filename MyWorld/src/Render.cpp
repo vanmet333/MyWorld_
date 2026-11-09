@@ -77,12 +77,71 @@ namespace {
     MapRegenerationCallback map_regeneration_callback = nullptr;
     void* map_regeneration_user_data = nullptr;
 
-    struct TileTexture {
+    struct TextureMipLevel {
         UINT width = 0;
         UINT height = 0;
         vector<uint32_t> pixels;   // premultiplied RGB
         vector<unsigned char> alpha;
     };
+
+    struct TileTexture {
+        UINT width = 0;
+        UINT height = 0;
+        vector<uint32_t> pixels;   // premultiplied RGB
+        vector<unsigned char> alpha;
+        vector<TextureMipLevel> mipmaps; // уровни 1/2, 1/4, 1/8... исходной текстуры
+    };
+
+    // Создаёт mip-цепочку из уже загруженной premultiplied RGBA текстуры.
+    // Уменьшение выполняется усреднением 2x2 с корректной обработкой краёв.
+    void build_mipmaps(TileTexture& texture) {
+        if (texture.width == 0 || texture.height == 0 ||
+            texture.pixels.empty() || texture.alpha.size() != texture.pixels.size())
+            return;
+
+        TextureMipLevel previous{
+            texture.width, texture.height, texture.pixels, texture.alpha
+        };
+
+        while (previous.width > 1 || previous.height > 1) {
+            TextureMipLevel next;
+            next.width = max(1u, previous.width / 2u);
+            next.height = max(1u, previous.height / 2u);
+            const size_t count = static_cast<size_t>(next.width) * next.height;
+            next.pixels.resize(count);
+            next.alpha.resize(count);
+
+            for (UINT y = 0; y < next.height; ++y) {
+                for (UINT x = 0; x < next.width; ++x) {
+                    uint32_t red = 0, green = 0, blue = 0, alpha = 0, samples = 0;
+                    for (UINT dy = 0; dy < 2; ++dy) {
+                        for (UINT dx = 0; dx < 2; ++dx) {
+                            const UINT sx = min(previous.width - 1u, x * 2u + dx);
+                            const UINT sy = min(previous.height - 1u, y * 2u + dy);
+                            const size_t index = static_cast<size_t>(sy) * previous.width + sx;
+                            const uint32_t color = previous.pixels[index];
+                            red += (color >> 16) & 0xffu;
+                            green += (color >> 8) & 0xffu;
+                            blue += color & 0xffu;
+                            alpha += previous.alpha[index];
+                            ++samples;
+                        }
+                    }
+
+                    const size_t destination = static_cast<size_t>(y) * next.width + x;
+                    next.pixels[destination] =
+                        (((red + samples / 2u) / samples) << 16) |
+                        (((green + samples / 2u) / samples) << 8) |
+                        ((blue + samples / 2u) / samples);
+                    next.alpha[destination] =
+                        static_cast<unsigned char>((alpha + samples / 2u) / samples);
+                }
+            }
+
+            texture.mipmaps.push_back(next);
+            previous = move(next);
+        }
+    }
 
     // Стандартное source-over смешивание для одного канала:
     //   out = src * a + dst * (1 - a)
@@ -275,6 +334,7 @@ namespace {
                         continue;
                     }
 
+                    build_mipmaps(texture);
                     loaded[biome_id].push_back(move(texture));
                 }
 
@@ -1061,6 +1121,31 @@ const {
         const int top = static_cast<int>(floor(object.y * tile_size - camera_y));
         const int draw_width = max(1, static_cast<int>(ceil(sprite_width)));
         const int draw_height = max(1, static_cast<int>(ceil(sprite_height)));
+
+        // Подбираем mip-уровень по фактическому уменьшению спрайта на экране.
+        const vector<uint32_t>* sampled_pixels = object_texture ? &object_texture->pixels : nullptr;
+        const vector<unsigned char>* sampled_alpha = object_texture ? &object_texture->alpha : nullptr;
+        UINT sampled_width = object_texture ? object_texture->width : 0;
+        UINT sampled_height = object_texture ? object_texture->height : 0;
+        if (object_texture && object.type == WorldObjectType::Tree &&
+            !object_texture->mipmaps.empty()) {
+            const double reduction = max(
+                static_cast<double>(object_texture->width) / draw_width,
+                static_cast<double>(object_texture->height) / draw_height
+            );
+            if (reduction >= 2.0) {
+                size_t mip_index = static_cast<size_t>(floor(log2(reduction)));
+                mip_index = min(mip_index, object_texture->mipmaps.size());
+                if (mip_index > 0) {
+                    const TextureMipLevel& mip = object_texture->mipmaps[mip_index - 1];
+                    sampled_pixels = &mip.pixels;
+                    sampled_alpha = &mip.alpha;
+                    sampled_width = mip.width;
+                    sampled_height = mip.height;
+                }
+            }
+        }
+
         const int right = min(target_map_size, left + draw_width);
         const int bottom = min(target_map_size, top + draw_height);
         if (right <= 0 || bottom <= 0 || left >= target_map_size || top >= target_map_size)
@@ -1076,13 +1161,14 @@ const {
             array<uint32_t, 4> sample{}; // premultiplied RGBA
             if (local_x < 0 || local_y < 0 || local_x >= draw_width || local_y >= draw_height)
                 return sample;
-            if (object_texture) {
-                const UINT sx = min(static_cast<UINT>((local_x + 0.5) * object_texture->width / draw_width), object_texture->width - 1);
-                const UINT sy = min(static_cast<UINT>((local_y + 0.5) * object_texture->height / draw_height), object_texture->height - 1);
-                const size_t source_index = static_cast<size_t>(sy) * object_texture->width + sx;
-                const uint32_t color = object_texture->pixels[source_index];
+            if (object_texture && sampled_pixels && sampled_alpha &&
+                sampled_width > 0 && sampled_height > 0) {
+                const UINT sx = min(static_cast<UINT>((local_x + 0.5) * sampled_width / draw_width), sampled_width - 1);
+                const UINT sy = min(static_cast<UINT>((local_y + 0.5) * sampled_height / draw_height), sampled_height - 1);
+                const size_t source_index = static_cast<size_t>(sy) * sampled_width + sx;
+                const uint32_t color = (*sampled_pixels)[source_index];
                 sample = { (color >> 16) & 0xffu, (color >> 8) & 0xffu, color & 0xffu,
-                    object_texture->alpha[source_index] };
+                    (*sampled_alpha)[source_index] };
             }
             else {
                 sample = { (fallback_color >> 16) & 0xffu, (fallback_color >> 8) & 0xffu,
